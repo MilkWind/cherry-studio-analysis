@@ -38,6 +38,34 @@ interface MemoryState {
 
 The `globalMemoryEnabled` flag acts as a master switch that controls whether memory features are active throughout the application.
 
+### 2. Memory Retrieval and Injection into Context
+
+The global memory mechanism retrieves and injects memory into context during AI conversations when all of the following conditions are met:
+
+1. Global memory is enabled (`globalMemoryEnabled` flag is true in the Redux store)
+2. The specific assistant has memory enabled (`assistant.enableMemory` is true)
+3. A conversation is actively being processed
+
+#### When Memory Retrieval is Triggered
+
+Memory retrieval is triggered by user actions that initiate AI conversations:
+
+1. **Sending a Message**: When a user sends a message in a conversation with an assistant that has global memory and assistant memory enabled
+2. **Generating a Response**: When the AI generates a response and needs to access historical context
+3. **Tool Usage**: When the AI decides to use the `builtin_memory_search` tool during its reasoning process
+
+#### The Retrieval Process
+
+The retrieval process occurs in real-time during conversation processing:
+
+1. **Tool Configuration**: During the `transformParams` phase in the search orchestration plugin, if both global memory and assistant memory are enabled, the `builtin_memory_search` tool is added to the AI request parameters
+2. **AI Decision Making**: The AI determines when to use the memory search tool based on the conversation context and system prompts
+3. **Tool Execution**: When the AI invokes the `builtin_memory_search` tool, it passes a query string to search for relevant memories
+4. **Vector Similarity Search**: The MemorySearchTool executes a search against the SQLite database using vector similarity search to find relevant memories
+5. **Context Injection**: Retrieved memories are returned to the AI as tool results and incorporated into the response generation process
+
+This retrieval and injection process is controlled by the global memory flag acting as a master switch, ensuring memory functionality can be completely disabled application-wide when needed.
+
 ### 2. Enabling Global Memory
 
 Global memory can be toggled in the Memory Settings page:
@@ -94,11 +122,44 @@ const isMemoryEnabled = globalMemoryEnabled && isMemoryConfigured
 
 ## Key Features Controlled by Global Memory
 
-1. **Conversation Memory Storage**: Automatic storage of conversation snippets
-2. **Fact Extraction**: Extraction of key facts from conversations
-3. **Semantic Search**: Vector-based search through stored memories
-4. **Context Enhancement**: Providing relevant historical context to AI responses
-5. **User-Specific Memory**: Separate memory contexts for different users
+1. **Conversation Memory Storage**: Automatic storage of conversation snippets when users engage in conversations with assistants that have memory enabled
+2. **Fact Extraction**: Extraction of key facts from conversations during the memory processing phase after each user message
+3. **Semantic Search**: Vector-based search through stored memories triggered by AI tool calls during conversation processing
+4. **Context Enhancement**: Providing relevant historical context to AI responses when the AI determines that past memories are relevant to the current conversation
+5. **User-Specific Memory**: Separate memory contexts for different users, ensuring privacy and personalized experiences
+
+## Example Conversation Flow with Memory Retrieval
+
+Here's an example of how the memory retrieval process works during a conversation:
+
+### Initial Conversation (Storage Phase)
+
+**User**: "Hi, my name is John and I'm working on a React project."
+
+**Assistant**: "Nice to meet you, John! How can I help you with your React project?"
+
+*Behind the scenes - Memory Storage*:
+1. Global memory is enabled and assistant has memory enabled
+2. After the exchange, the system processes the conversation to extract facts
+3. Facts extracted: `{"name": "John", "project": "React"}`
+4. These facts are stored in the SQLite database with vector embeddings
+
+### Follow-up Conversation (Retrieval Phase)
+
+**User**: "Can you help me debug my React component? I mentioned it earlier."
+
+**Assistant**: "I recall you mentioned working on a React project earlier. Let me help you debug your component. Can you share the code that's causing issues?"
+
+*Behind the scenes - Memory Retrieval*:
+1. User sends a message that triggers AI response generation
+2. During search orchestration, the `builtin_memory_search` tool is added to the AI request
+3. The AI decides to use the memory search tool with a query like "user's React project"
+4. The MemorySearchTool executes a vector similarity search in the database
+5. Relevant memories about John and his React project are retrieved
+6. These memories are injected into the AI's context, allowing it to reference previous conversation history
+7. The AI generates a response that acknowledges the previous conversation about the React project
+
+This flow demonstrates how memory is automatically stored during conversations and retrieved when relevant to provide context-aware responses.
 
 ## Dependencies
 
