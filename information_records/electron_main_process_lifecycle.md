@@ -138,3 +138,39 @@ The Electron knowledge point here is that shutdown is often split into a synchro
 - Use `requestSingleInstanceLock()` if deep links or OS relaunches matter
 - Keep Electron UI startup in `app.whenReady()`
 - Split quit logic across `before-quit` and `will-quit`
+
+## 12. How To Apply This Knowledge In Development
+
+Use this document as a decision guide when you touch `src/main/index.ts` or add a new main-process service.
+
+Choose the right place for new code:
+- Put process-wide switches, protocol registration, and single-instance guards before `app.whenReady()`.
+- Put `BrowserWindow`, tray, menu, and Electron UI construction inside `app.whenReady()` or lifecycle services started after readiness.
+- Put long-lived resources into lifecycle services instead of growing `index.ts`.
+- Put final cleanup into quit handlers only if it truly belongs to app shutdown rather than service stop logic.
+
+Practical usage pattern:
+1. Decide whether the behavior is pre-ready, ready-time, or shutdown-time.
+2. Decide whether it is shell bootstrap code or a reusable service responsibility.
+3. Verify whether it depends on an existing window, tray, protocol client, or IPC channel.
+4. Place it in the earliest safe phase, not the latest convenient phase.
+
+Common mistakes this avoids:
+- Registering protocol or Chromium switches too late.
+- Creating windows before required configuration is applied.
+- Starting background services before their dependencies exist.
+- Leaving quit cleanup split across unrelated files with no clear ownership.
+
+## 13. Typical Application Scenarios
+
+- You add a new startup-only Chromium flag for a rendering bug. This belongs before `app.whenReady()`.
+- You add a new service that listens for system power events. This belongs in a lifecycle service started after readiness, not inline in `index.ts`.
+- You add a new deep-link action. This requires both single-instance flow and protocol routing to stay consistent during startup and relaunch.
+- You add a new resource that must be disposed on exit. First prefer lifecycle-managed cleanup; only use `before-quit` or `will-quit` for truly app-level shutdown coordination.
+
+## 14. Relationship To The Other Electron Records
+
+- This document is the foundation for `electron_window_tray_menu_architecture.md` because windows, tray, and menus are created during the ready phase.
+- It directly supports `electron_protocol_oauth_and_deep_linking.md` because protocol registration, startup args, and `second-instance` routing are lifecycle concerns first.
+- It indirectly supports `electron_webview_session_management.md` because webview session setup and guest hooks depend on the shell already being booted correctly.
+- It affects `electron_build_packaging_and_update_pipeline.md` because packaged protocol handlers, startup arguments, and updater behavior must align with the runtime lifecycle.

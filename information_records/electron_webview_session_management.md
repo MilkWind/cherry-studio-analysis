@@ -129,3 +129,39 @@ This is a good example of mixing guest-page JS execution with native file dialog
 - Control popup behavior with `setWindowOpenHandler()`
 - Forward important guest hotkeys back to the host renderer
 - Use `webContents.fromId()` when the renderer only knows the DOM webview element
+
+## 8. How To Apply This Knowledge In Development
+
+Use this document when you need browser-like embedded content without giving renderer code full Electron privilege.
+
+Choose the right design:
+- Use a `<webview>` only when the feature needs a separate guest process, session control, or privileged main-process integration.
+- Keep session, popup, export, and privileged guest APIs in main process.
+- Use the persistent partition intentionally; if two mini apps must not share cookies, they need different partitions or a different embedding strategy.
+- Decide early whether guest links should stay inside the app or move to the system browser.
+
+Practical usage pattern:
+1. Define the trust boundary for the guest content.
+2. Choose the session partition and user-agent behavior.
+3. Define popup, navigation, and shortcut policy before exposing the webview to users.
+4. Add main-process helpers for any privileged guest operation such as printing, export, or spellcheck.
+
+Common mistakes this avoids:
+- Using `<webview>` where an ordinary iframe or external browser would be safer.
+- Accidentally sharing cookies and session state across unrelated guest experiences.
+- Letting guest pages spawn unrestricted windows.
+- Expecting host shortcuts to work inside guest content without explicit forwarding.
+
+## 9. Typical Application Scenarios
+
+- Add a new mini app that needs login persistence across sessions.
+- Let users export the currently embedded page as PDF or HTML.
+- Open OAuth pages internally for an allowlisted flow but force all other links into the system browser.
+- Add guest-level spellcheck or search behavior controlled by the host UI.
+
+## 10. Relationship To The Other Electron Records
+
+- This document relies on `electron_window_tray_menu_architecture.md` because guest-content rules are attached from the shell that owns the windows.
+- It relies on `electron_main_process_lifecycle.md` because guest session initialization and global hooks must happen during the correct startup phase.
+- It can intersect with `electron_protocol_oauth_and_deep_linking.md` when embedded content participates in login or provider callback flows.
+- It affects `electron_build_packaging_and_update_pipeline.md` if embedded content depends on preload exposure, assets, or packaging exceptions.

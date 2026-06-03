@@ -132,3 +132,39 @@ That is not an Electron API feature, but it is a project-specific desktop update
 - Keep runtime-required assets out of packed asar when necessary
 - Let main process own updater policy
 - Choose update feeds dynamically when region, compatibility, and release channel matter
+
+## 11. How To Apply This Knowledge In Development
+
+Use this document when a feature crosses the boundary from source code into a distributable desktop product.
+
+Choose the right integration point:
+- Change `electron.vite.config.ts` when you add or reshape main, preload, or renderer entry points.
+- Change `electron-builder.yml` when the packaged app needs new assets, binaries, protocol metadata, or platform targets.
+- Change `AppUpdater.ts` when update policy, feed selection, or renderer notifications change.
+- Verify runtime file access assumptions before deciding whether something can live inside `app.asar`.
+
+Practical usage pattern:
+1. Identify which process owns the new code: main, preload, renderer, or multiple.
+2. If a new native window exists, add a distinct renderer entry rather than overloading an unrelated one.
+3. If the feature needs runtime files, native modules, or child processes, confirm packaging and `asarUnpack` rules.
+4. Test both development execution and packaged behavior because Electron packaging changes path, protocol, and updater assumptions.
+
+Common mistakes this avoids:
+- Adding a new window in code without adding its HTML entry to the build.
+- Packaging a runtime dependency into `app.asar` when it needs filesystem access.
+- Assuming update behavior is a static URL rather than channel and region aware.
+- Fixing only dev mode while leaving the packaged app broken.
+
+## 12. Typical Application Scenarios
+
+- Add a new renderer entry for a utility window, onboarding flow, or diagnostics surface.
+- Ship an extra executable, model file, or runtime asset needed by the main process.
+- Change Windows or Linux packaging targets.
+- Add a new beta or regional update rule and surface the result in renderer.
+
+## 13. Relationship To The Other Electron Records
+
+- This document packages the runtime behaviors described in `electron_main_process_lifecycle.md`; startup assumptions only matter if the packaged app preserves them.
+- It packages the window entry points described in `electron_window_tray_menu_architecture.md`.
+- It must include protocol metadata required by `electron_protocol_oauth_and_deep_linking.md`.
+- It can preserve or break the preload and asset assumptions used by `electron_webview_session_management.md`.

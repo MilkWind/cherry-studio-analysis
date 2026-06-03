@@ -134,3 +134,39 @@ That mixes shell UX with embedded-content policy, which is common in Electron ap
 - Persist geometry per window type
 - Expect platform-specific hacks for focus, fullscreen, and title bars
 - Use native menus and tray items as IPC entry points back into the renderer
+
+## 11. How To Apply This Knowledge In Development
+
+Use this document when you are deciding how a new desktop-facing feature should appear to the user.
+
+Choose the right integration point:
+- Use `WindowService` when the feature changes window creation, reuse, focus, geometry, or native shell policy.
+- Use `TrayService` when the feature must remain available while the main window is hidden or closed to tray.
+- Use `AppMenuService` for macOS-native entry points that should feel like part of the desktop app, not just the web UI.
+- Use renderer navigation only after the native entry point has already routed into the correct window.
+
+Practical usage pattern:
+1. Define whether the new behavior belongs to the main window, a utility window, tray, or menu.
+2. Decide whether it should reuse an existing window or create a distinct renderer entry.
+3. Check platform-specific expectations before copying behavior across Windows, macOS, and Linux.
+4. Keep shell policy in main process and UI state in renderer, connected by IPC.
+
+Common mistakes this avoids:
+- Attaching window listeners after a reused window is already alive.
+- Treating close, hide, minimize, and quit as the same action.
+- Adding renderer-only code for behavior that must still work when the window is hidden.
+- Forgetting macOS-specific menu and dock expectations.
+
+## 12. Typical Application Scenarios
+
+- Add a new always-on-top utility window for a focused workflow.
+- Change what happens when the user closes the main window while tray mode is enabled.
+- Add a tray action for toggling a background feature without restoring the main window.
+- Add a macOS menu item that opens a settings route or About screen in the current renderer.
+
+## 13. Relationship To The Other Electron Records
+
+- This document builds on `electron_main_process_lifecycle.md` because window and tray creation only make sense after the app boot phase is correct.
+- It works closely with `electron_webview_session_management.md` because embedded guest content inherits window-level popup, navigation, and focus policy.
+- It supports `electron_protocol_oauth_and_deep_linking.md` because a deep link usually needs to show, focus, or navigate an existing window.
+- It connects to `electron_build_packaging_and_update_pipeline.md` when you add a new renderer entry file for another native window.
