@@ -322,7 +322,7 @@ mainWindow.on('leave-full-screen', () => {
   mainWindow.webContents.send('fullscreen-changed', false);
 });
 
-mainWindow.on('render-process-gone', (event, details) => {
+mainWindow.webContents.on('render-process-gone', (event, details) => {
   const now = Date.now();
   if (now - lastCrashTime < 10000) {
     crashCount++;
@@ -334,7 +334,7 @@ mainWindow.on('render-process-gone', (event, details) => {
     crashCount = 0;
   }
   lastCrashTime = now;
-  mainWindow.reload();  // Try recovering
+  mainWindow.webContents.reload();  // Try recovering
 });
 ```
 
@@ -372,13 +372,13 @@ User clicks X on main window
       → NO: allow window to close (quit app on Windows/Linux)
 ```
 
-**MacOS dock hiding:** On macOS, when the window hides to tray, the app remains running with a dot under the dock icon. Hiding the dock icon (`app.dock.hide()`) makes the app disappear from the dock entirely, leaving only the tray icon — which is the expected behavior for a background/tray app.
+**MacOS dock behavior:** On macOS, when the main window hides to tray, the app may still have other windows that should keep the Dock icon visible. Cherry Studio therefore does not blindly call `app.dock.hide()`. Instead, it updates WindowManager's per-window-type Dock contribution so the Dock visibility stays correct in multi-window scenarios.
 
 **Blind spot — "What happens if you don't call `event.preventDefault()` in the close handler?":** The default close action proceeds: the window is destroyed, its renderer process is terminated, and the `BrowserWindow` object becomes unusable. Calling `event.preventDefault()` stops this — the window stays alive. You can then `.hide()` it (keeps the window alive but invisible) or `.minimize()` it.
 
 ### Universal Reuse — Your Own Electron Project
 
-This is the standard close-to-tray recipe for any Electron app:
+This is the standard close-to-tray recipe for a simple single-window Electron app:
 
 ```typescript
 let isQuitting = false;
@@ -390,7 +390,7 @@ mainWindow.on('close', (event) => {
     event.preventDefault();
     mainWindow.hide();
     if (process.platform === 'darwin') {
-      app.dock.hide();  // macOS: hide dock icon too
+      app.dock.hide();  // Fine for simple apps; multi-window apps often need a more coordinated policy
     }
   }
   // If isQuitting, let the window close normally
@@ -558,9 +558,9 @@ It builds a localized native menu with:
 - app menu roles like hide/unhide/services/quit
 - standard file/edit/view/window menus
 - help links opened through `shell.openExternal`
-- an About action that sends `IpcChannel.Windows_NavigateToAbout` into the renderer
+- an About action that opens the settings window to `/settings/about`
 
-This shows an important Electron pattern: native menu actions can drive SPA navigation by emitting IPC into the existing renderer.
+This shows an important Electron pattern: native menu actions can drive app navigation either by emitting IPC into an existing renderer or by opening a dedicated window/route directly from the main process.
 
 ### Plain-Language Explanation
 
@@ -571,18 +571,18 @@ This shows an important Electron pattern: native menu actions can drive SPA navi
 
 Using roles is better than manually creating these items because the behavior matches what the OS expects.
 
-**The About action pattern — why IPC instead of direct navigation:**
+**The About action pattern — why direct window routing is used here:**
 
-The About menu item is a native macOS menu item (in the 🍎 App Name menu). When clicked, it needs to navigate the React SPA to the About page. But the menu code runs in the main process — it cannot call React Router's `navigate('/about')` directly.
+The About menu item is a native macOS menu item (in the 🍎 App Name menu). In Cherry Studio, clicking it opens the settings window directly to the `/settings/about` route. The menu code runs in the main process, so routing can be handled by a window-owning service without going through renderer IPC first.
 
 The pattern is:
 1. User clicks "About Cherry Studio" in the native menu
 2. Main process receives the click
-3. Main process sends an IPC message: `mainWindow.webContents.send('navigate-to-about')`
-4. Renderer process receives the message
-5. React Router navigates to the About route
+3. Main process calls `SettingsWindowService.open('/settings/about')`
+4. The settings window opens or reuses an existing instance
+5. The renderer loads the About route
 
-This pattern — native menu → IPC → SPA navigation — is useful for any scenario where OS-native UI needs to trigger changes inside the web UI.
+Direct window routing is useful when a menu action clearly belongs to a dedicated window or route. IPC-driven navigation is still a valid pattern, but it is not the one Cherry Studio uses for About.
 
 **`shell.openExternal` for help links:** `shell.openExternal(url)` opens a URL in the user's default web browser (Chrome, Safari, Firefox), not inside the Electron app. This is appropriate for help/documentation links — users expect documentation to open in their browser.
 

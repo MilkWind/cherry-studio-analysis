@@ -451,16 +451,16 @@ That is a standard Electron packaging tradeoff: tighter packaging versus runtime
 | Slightly faster app start | Slightly more complex setup |
 | But: native modules BREAK | Native modules WORK |
 | But: child processes BREAK | Child processes WORK |
-| But: some `fs` operations BREAK | All `fs` operations WORK |
+| Most Node `fs` reads still WORK | Real-path-only cases WORK |
 
 **How to know if something needs asarUnpack:**
 
 Ask these questions about each file/dependency:
 1. Does it contain compiled native code (`.node` files, `.dll`, `.so`, `.dylib`)? → MUST unpack
 2. Does the app launch it as a child process (`child_process.spawn()`)? → MUST unpack
-3. Is it read using `fs.readFileSync()` with a relative path? → MUST unpack
+3. Does some library or OS API require a real filesystem path (not just file contents)? → Usually MUST unpack
 4. Is it served over HTTP or loaded via Electron's `protocol` API? → Can stay in asar
-5. Is it a JavaScript file loaded via `require()` or `import`? → Can stay in asar
+5. Is it a JavaScript file loaded via `require()`, `import`, or ordinary Node `fs` reads? → Usually can stay in asar
 
 **Why native `.node` files break in asar:** `.node` files are compiled C++ code loaded by Node.js via `process.dlopen()`. The operating system's dynamic linker (`dlopen` on Unix, `LoadLibrary` on Windows) needs a real file path to load the library. It cannot read from inside an archive — it talks directly to the filesystem.
 

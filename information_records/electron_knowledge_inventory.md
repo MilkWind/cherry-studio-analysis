@@ -301,7 +301,7 @@ New knowledge points:
 ### Universal Reuse — How These Patterns Apply to Any Electron Project
 
 1. **Separate renderer entries for separate windows**: Do not shoehorn multiple windows into one SPA entry with conditional routing. Each window type deserves its own HTML entry point. This keeps bundle sizes small and avoids loading code for windows that never open.
-2. **`asarUnpack` for native dependencies**: Any native Node.js module (`.node` files), external binary, or resource file that uses `fs.readFileSync` with a relative path must be unpacked from the asar. This is a universal rule.
+2. **`asarUnpack` for native dependencies**: Native Node.js modules (`.node` files), external binaries, and anything that must be accessed through a real OS filesystem path usually need `asarUnpack`. Ordinary Node `fs.readFileSync()` reads can often work directly from `app.asar`, so do not treat unpacking as a blanket rule.
 3. **Channel-aware update feeds with mirror fallback**: If your app has users in China and elsewhere, the GitHub-based update feed may be slow or blocked in China. A mirror-based fallback (like GitCode) is a practical necessity for global distribution.
 4. **Auto-download yes, auto-install no**: Letting the app download updates in the background is convenient. Silently replacing the app on quit can surprise users and lose their work state. The explicit-install pattern is user-friendlier.
 
