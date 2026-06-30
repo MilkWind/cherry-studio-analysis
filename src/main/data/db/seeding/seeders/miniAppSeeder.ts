@@ -1,6 +1,6 @@
-import { type MiniAppInsert, miniAppTable } from '@data/db/schemas/miniApp'
+import { type InsertMiniAppRow, miniAppTable } from '@data/db/schemas/miniApp'
 import { generateOrderKeySequence } from '@data/services/utils/orderKey'
-import { PRESETS_MINI_APPS } from '@shared/data/presets/mini-apps'
+import { PRESETS_MINI_APPS } from '@shared/data/presets/miniApps'
 import { isNotNull } from 'drizzle-orm'
 
 import type { DbType, ISeeder } from '../../types'
@@ -30,7 +30,7 @@ export class MiniAppSeeder implements ISeeder {
 
   async run(db: DbType): Promise<void> {
     for (const preset of PRESETS_MINI_APPS) {
-      const insertRow: MiniAppInsert = {
+      const insertRow: InsertMiniAppRow = {
         appId: preset.id,
         presetMiniAppId: preset.id,
         name: preset.name,

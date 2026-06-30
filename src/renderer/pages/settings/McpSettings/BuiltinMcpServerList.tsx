@@ -1,8 +1,8 @@
 import { Badge, Button, Popover, PopoverContent, PopoverTrigger, Tabs, TabsList, TabsTrigger } from '@cherrystudio/ui'
 import CollapsibleSearchBar from '@renderer/components/CollapsibleSearchBar'
-import { useMcpServers } from '@renderer/hooks/useMcpServers'
-import { getBuiltInMcpServerDescriptionLabel } from '@renderer/i18n/label'
-import { builtinMCPServers } from '@renderer/store/mcp'
+import { useMcpServers } from '@renderer/hooks/useMcpServer'
+import { getBuiltInMcpServerDescriptionLabelKey } from '@renderer/i18n/label'
+import { builtinMcpServers } from '@renderer/pages/settings/McpSettings/builtinMcpServers'
 import { cn } from '@renderer/utils/style'
 import { Check, Plus } from 'lucide-react'
 import type { FC } from 'react'
@@ -20,7 +20,7 @@ const BuiltinMcpServerList: FC = () => {
 
   const installedCount = useMemo(
     () =>
-      builtinMCPServers.filter((server) => mcpServers.some((existingServer) => existingServer.name === server.name))
+      builtinMcpServers.filter((server) => mcpServers.some((existingServer) => existingServer.name === server.name))
         .length,
     [mcpServers]
   )
@@ -28,7 +28,7 @@ const BuiltinMcpServerList: FC = () => {
   const filteredServers = useMemo(() => {
     const keyword = searchText.trim().toLowerCase()
 
-    return builtinMCPServers.filter((server) => {
+    return builtinMcpServers.filter((server) => {
       const isInstalled = mcpServers.some((existingServer) => existingServer.name === server.name)
 
       if (filter === 'installed' && !isInstalled) return false
@@ -36,17 +36,17 @@ const BuiltinMcpServerList: FC = () => {
 
       if (!keyword) return true
 
-      const description = getBuiltInMcpServerDescriptionLabel(server.name).toLowerCase()
+      const description = t(getBuiltInMcpServerDescriptionLabelKey(server.name)).toLowerCase()
       return server.name.toLowerCase().includes(keyword) || description.includes(keyword)
     })
-  }, [filter, mcpServers, searchText])
+  }, [filter, mcpServers, searchText, t])
 
   return (
     <div className="mb-5">
       <div className="mb-3 flex items-center gap-2">
         <SettingTitle className="m-0">{t('settings.mcp.builtinServers')}</SettingTitle>
         <span className="text-muted-foreground text-sm">
-          {installedCount}/{builtinMCPServers.length}
+          {installedCount}/{builtinMcpServers.length}
         </span>
       </div>
 
@@ -105,13 +105,13 @@ const BuiltinMcpServerList: FC = () => {
                 <Popover>
                   <PopoverTrigger asChild>
                     <div className="line-clamp-2 cursor-pointer text-[13px] text-muted-foreground leading-5 transition-colors hover:text-foreground">
-                      {getBuiltInMcpServerDescriptionLabel(server.name)}
+                      {t(getBuiltInMcpServerDescriptionLabelKey(server.name))}
                     </div>
                   </PopoverTrigger>
                   <PopoverContent align="start" side="top" className="w-auto max-w-100">
                     <div className="mb-2 font-semibold text-foreground text-sm">{server.name}</div>
                     <div className="wrap-break-word whitespace-pre-wrap text-[14px] text-foreground leading-normal">
-                      {getBuiltInMcpServerDescriptionLabel(server.name)}
+                      {t(getBuiltInMcpServerDescriptionLabelKey(server.name))}
                       {server.reference && (
                         <a
                           href={server.reference}
@@ -123,7 +123,7 @@ const BuiltinMcpServerList: FC = () => {
                   </PopoverContent>
                 </Popover>
               </div>
-              <div className="ml-3 flex min-w-[86px] shrink-0 items-center justify-end self-center">
+              <div className="ml-3 flex min-w-21.5 shrink-0 items-center justify-end self-center">
                 {isInstalled ? (
                   <div className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-muted-foreground text-xs">
                     <Check size={13} className="text-success/75" />

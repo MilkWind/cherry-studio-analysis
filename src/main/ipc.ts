@@ -3,47 +3,35 @@ import { arch } from 'node:os'
 import path from 'node:path'
 
 import { application } from '@application'
-import { agentSessionMessageService as sessionMessageService } from '@data/services/AgentSessionMessageService'
 import { loggerService } from '@logger'
+import { generateSignature } from '@main/ai/provider/cherryai'
 import { isMac, isWin } from '@main/core/platform'
-import { generateSignature } from '@main/integration/cherryai'
 import { listDirectory as searchListDirectory } from '@main/services/file/tree/search'
-import { getIpCountry } from '@main/utils/ipService'
-import {
-  autoDiscoverGitBash,
-  getBinaryPath,
-  getGitBashPathInfo,
-  isBinaryExists,
-  runInstallScript,
-  validateGitBashPath
-} from '@main/utils/process'
+import { regionService } from '@main/services/RegionService'
+import { extractPdfText } from '@main/utils/pdf'
+import { getBinaryPath, isBinaryExists, runInstallScript } from '@main/utils/process'
 import { handleZoomFactor } from '@main/utils/zoom'
 import { IpcChannel } from '@shared/IpcChannel'
-import { extractPdfText } from '@shared/utils/pdf'
-import type { AgentPersistedMessage, FileMetadata, Notification, Provider } from '@types'
-import checkDiskSpace from 'check-disk-space'
+import type { Notification } from '@shared/types/notification'
 import { app, BrowserWindow, dialog, ipcMain, session, shell, systemPreferences, webContents } from 'electron'
 import fontList from 'font-list'
 
-import { skillService } from './services/agents/skills/SkillService'
+import { skillService } from './ai/skills/SkillService'
 import { appService } from './services/AppService'
-import { ConfigKeys, configManager } from './services/ConfigManager'
 import { copilotService } from './services/CopilotService'
 import { ExportService } from './services/ExportService'
 import { externalAppsService } from './services/ExternalAppsService'
 import { fileStorage as fileManager } from './services/FileStorage'
 import FileService from './services/FileSystemService'
-import { knowledgeService } from './services/KnowledgeService'
 import LegacyBackupManager from './services/LegacyBackupManager'
 import NotificationService from './services/NotificationService'
 import * as NutstoreService from './services/nutstore/NutstoreService'
 import ObsidianVaultService from './services/ObsidianVaultService'
-import { fileServiceManager } from './services/remotefile/FileServiceManager'
 import { vertexAiService } from './services/VertexAiService'
-import { calculateDirectorySize } from './utils'
 import { decrypt, encrypt } from './utils/aes'
 import { isSafeExternalUrl } from './utils/externalUrlSafety'
 import { hasWritePermission, isPathInside, untildify } from './utils/file'
+import { getDirectorySize } from './utils/fileOperations'
 import { getCpuName, getDeviceType, getHostname } from './utils/system'
 import { compress, decompress } from './utils/zip'
 
@@ -57,8 +45,8 @@ export async function registerIpc() {
   const notificationService = new NotificationService()
 
   // [v2] Removed: Redux persistor flush is no longer needed after v2 data refactoring
-  // const powerMonitorService = application.get('PowerMonitorService')
-  // powerMonitorService.registerShutdownHandler(() => {
+  // const powerService = application.get('PowerService')
+  // powerService.registerShutdownHandler(() => {
   //   const mw = application.get('MainWindowService').getMainWindow()
   //   if (mw && !mw.isDestroyed()) {
   //     mw.webContents.send(IpcChannel.App_SaveData)
@@ -69,7 +57,7 @@ export async function registerIpc() {
     version: app.getVersion(),
     isPackaged: app.isPackaged,
     appPath: application.getPath('app.root'),
-    filesPath: application.getPath('feature.files.data'),
+    homePath: application.getPath('sys.home'),
     notesPath: application.getPath('feature.notes.data'),
     configPath: application.getPath('cherry.config'),
     appDataPath: application.getPath('app.userdata'),
@@ -116,27 +104,6 @@ export async function registerIpc() {
     await appService.setAppLaunchOnBoot(isLaunchOnBoot)
   })
 
-  ipcMain.handle(IpcChannel.AgentMessage_PersistExchange, async (_event, payload) => {
-    try {
-      return await sessionMessageService.persistExchange(payload)
-    } catch (error) {
-      logger.error('Failed to persist agent session messages', error as Error)
-      throw error
-    }
-  })
-
-  ipcMain.handle(
-    IpcChannel.AgentMessage_GetHistory,
-    async (_event, { sessionId }: { sessionId: string }): Promise<AgentPersistedMessage[]> => {
-      try {
-        return await sessionMessageService.getSessionHistory(sessionId)
-      } catch (error) {
-        logger.error('Failed to get agent session history', error as Error)
-        throw error
-      }
-    }
-  )
-
   //only for mac
   if (isMac) {
     ipcMain.handle(IpcChannel.App_MacIsProcessTrusted, (): boolean => {
@@ -162,7 +129,7 @@ export async function registerIpc() {
 
   // Get IP Country
   ipcMain.handle(IpcChannel.App_GetIpCountry, async () => {
-    return getIpCountry()
+    return regionService.getCountry()
   })
 
   ipcMain.handle(IpcChannel.Config_Set, (_, key: string) => {
@@ -211,7 +178,7 @@ export async function registerIpc() {
     logger.info(`Calculating cache size for path: ${cachePath}`)
 
     try {
-      const sizeInBytes = await calculateDirectorySize(cachePath)
+      const sizeInBytes = await getDirectorySize(cachePath)
       const sizeInMB = (sizeInBytes / (1024 * 1024)).toFixed(2)
       return `${sizeInMB}`
     } catch (error: any) {
@@ -326,65 +293,8 @@ export async function registerIpc() {
   ipcMain.handle(IpcChannel.System_GetDeviceType, getDeviceType)
   ipcMain.handle(IpcChannel.System_GetHostname, getHostname)
   ipcMain.handle(IpcChannel.System_GetCpuName, getCpuName)
-  ipcMain.handle(IpcChannel.System_CheckGitBash, () => {
-    if (!isWin) {
-      return true // Non-Windows systems don't need Git Bash
-    }
-
-    try {
-      // Use autoDiscoverGitBash to handle auto-discovery and persistence
-      const bashPath = autoDiscoverGitBash()
-      if (bashPath) {
-        logger.info('Git Bash is available', { path: bashPath })
-        return true
-      }
-
-      logger.warn('Git Bash not found. Please install Git for Windows from https://git-scm.com/downloads/win')
-      return false
-    } catch (error) {
-      logger.error('Unexpected error checking Git Bash', error as Error)
-      return false
-    }
-  })
-
-  ipcMain.handle(IpcChannel.System_GetGitBashPath, () => {
-    if (!isWin) {
-      return null
-    }
-
-    const customPath = configManager.get(ConfigKeys.GitBashPath)
-    return customPath ?? null
-  })
-
-  // Returns { path, source } where source is 'manual' | 'auto' | null
-  ipcMain.handle(IpcChannel.System_GetGitBashPathInfo, () => {
-    return getGitBashPathInfo()
-  })
-
-  ipcMain.handle(IpcChannel.System_SetGitBashPath, (_, newPath: string | null) => {
-    if (!isWin) {
-      return false
-    }
-
-    if (!newPath) {
-      // Clear manual setting and re-run auto-discovery
-      configManager.set(ConfigKeys.GitBashPath, null)
-      configManager.set(ConfigKeys.GitBashPathSource, null)
-      // Re-run auto-discovery to restore auto-discovered path if available
-      autoDiscoverGitBash()
-      return true
-    }
-
-    const validated = validateGitBashPath(newPath)
-    if (!validated) {
-      return false
-    }
-
-    // Set path with 'manual' source
-    configManager.set(ConfigKeys.GitBashPath, validated)
-    configManager.set(ConfigKeys.GitBashPathSource, 'manual')
-    return true
-  })
+  // Git Bash has no IPC: the Claude Code runtime resolves it in-process via
+  // autoDiscoverGitBash() (ai/runtime/claudeCode/settingsBuilder.ts).
 
   ipcMain.handle(IpcChannel.System_ToggleDevTools, (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
@@ -412,15 +322,7 @@ export async function registerIpc() {
   ipcMain.handle(IpcChannel.Backup_CreateLanTransferBackup, backupManager.createLanTransferBackup.bind(backupManager))
   ipcMain.handle(IpcChannel.Backup_DeleteLanTransferBackup, backupManager.deleteLanTransferBackup.bind(backupManager))
 
-  // [v2] v1 legacy file IPC — these 44 channels expose physical file IO
-  // (read/write/delete/move on <userData>/Data/Files/<v1uuid>.<ext>, plus
-  // notes/watcher/directory utilities) backed by the FileStorage singleton.
-  // The Dexie `db.files` metadata + refcount layer lives entirely in the
-  // renderer (`src/renderer/services/FileManager.ts`); main never
-  // touches IndexedDB. Both sides stay live until Batch A-E migrates the
-  // renderer callers to the v2 surface (createInternalEntry /
-  // ensureExternalEntry / getPhysicalPath / permanentDelete / runSweep)
-  // registered by the v2 FileManager lifecycle service, not here.
+  // file
   ipcMain.handle(IpcChannel.File_Open, fileManager.open.bind(fileManager))
   ipcMain.handle(IpcChannel.File_OpenPath, fileManager.openPath.bind(fileManager))
   ipcMain.handle(IpcChannel.File_Save, fileManager.save.bind(fileManager))
@@ -462,30 +364,7 @@ export async function registerIpc() {
   ipcMain.handle(IpcChannel.File_ShowInFolder, fileManager.showInFolder.bind(fileManager))
 
   // pdf
-  // TODO: It should be handled by FileProcessingService
   ipcMain.handle(IpcChannel.Pdf_ExtractText, (_, data: Uint8Array | ArrayBuffer | string) => extractPdfText(data))
-
-  // file service
-  // TODO: They should be handled by FileUploadService
-  ipcMain.handle(IpcChannel.FileService_Upload, async (_, provider: Provider, file: FileMetadata) => {
-    const service = fileServiceManager.getService(provider)
-    return await service.uploadFile(file)
-  })
-
-  ipcMain.handle(IpcChannel.FileService_List, async (_, provider: Provider) => {
-    const service = fileServiceManager.getService(provider)
-    return await service.listFiles()
-  })
-
-  ipcMain.handle(IpcChannel.FileService_Delete, async (_, provider: Provider, fileId: string) => {
-    const service = fileServiceManager.getService(provider)
-    return await service.deleteFile(fileId)
-  })
-
-  ipcMain.handle(IpcChannel.FileService_Retrieve, async (_, provider: Provider, fileId: string) => {
-    const service = fileServiceManager.getService(provider)
-    return await service.retrieveFile(fileId)
-  })
 
   // fs
   ipcMain.handle(IpcChannel.Fs_Read, FileService.readFile.bind(FileService))
@@ -498,14 +377,6 @@ export async function registerIpc() {
   ipcMain.handle(IpcChannel.Open_Path, async (_, path: string) => {
     await shell.openPath(path)
   })
-
-  ipcMain.handle(IpcChannel.KnowledgeBase_Create, knowledgeService.create.bind(knowledgeService))
-  ipcMain.handle(IpcChannel.KnowledgeBase_Reset, knowledgeService.reset.bind(knowledgeService))
-  ipcMain.handle(IpcChannel.KnowledgeBase_Delete, knowledgeService.delete.bind(knowledgeService))
-  ipcMain.handle(IpcChannel.KnowledgeBase_Add, knowledgeService.add.bind(knowledgeService))
-  ipcMain.handle(IpcChannel.KnowledgeBase_Remove, knowledgeService.remove.bind(knowledgeService))
-  ipcMain.handle(IpcChannel.KnowledgeBase_Search, knowledgeService.search.bind(knowledgeService))
-  ipcMain.handle(IpcChannel.KnowledgeBase_Rerank, knowledgeService.rerank.bind(knowledgeService))
 
   // memory
   // VertexAI
@@ -530,20 +401,14 @@ export async function registerIpc() {
   )
 
   // Channel logs & status
-  ipcMain.handle(IpcChannel.Channel_GetLogs, async (_event, channelId: string) => {
-    const { channelManager } = await import('@main/services/agents/services/channels/ChannelManager')
-    return channelManager.getChannelLogs(channelId)
-  })
+  ipcMain.handle(IpcChannel.Channel_GetLogs, (_event, channelId: string) =>
+    application.get('ChannelManager').getChannelLogs(channelId)
+  )
 
-  ipcMain.handle(IpcChannel.Channel_GetStatuses, async () => {
-    const { channelManager } = await import('@main/services/agents/services/channels/ChannelManager')
-    return channelManager.getAllStatuses()
-  })
+  ipcMain.handle(IpcChannel.Channel_GetStatuses, () => application.get('ChannelManager').getAllStatuses())
 
   ipcMain.handle(IpcChannel.App_IsBinaryExist, (_, name: string) => isBinaryExists(name))
   ipcMain.handle(IpcChannel.App_GetBinaryPath, (_, name: string) => getBinaryPath(name))
-  ipcMain.handle(IpcChannel.App_InstallUvBinary, () => runInstallScript('install-uv.js'))
-  ipcMain.handle(IpcChannel.App_InstallBunBinary, () => runInstallScript('install-bun.js'))
   ipcMain.handle(IpcChannel.App_InstallOvmsBinary, () => runInstallScript('install-ovms.js'))
 
   //copilot
@@ -569,27 +434,6 @@ export async function registerIpc() {
   ipcMain.handle(IpcChannel.Nutstore_GetDirectoryContents, (_, token: string, path: string) =>
     NutstoreService.getDirectoryContents(token, path)
   )
-
-  // ipcMain.handle(IpcChannel.App_SetDisableHardwareAcceleration, (_, isDisable: boolean) => {
-  //   configManager.setDisableHardwareAcceleration(isDisable)
-  // })
-  // ipcMain.handle(IpcChannel.App_SetUseSystemTitleBar, (_, isActive: boolean) => {
-  //   configManager.setUseSystemTitleBar(isActive)
-  // })
-  ipcMain.handle(IpcChannel.App_GetDiskInfo, async (_, directoryPath: string) => {
-    try {
-      const diskSpace = await checkDiskSpace(directoryPath) // { free, size } in bytes
-      logger.debug('disk space', diskSpace)
-      const { free, size } = diskSpace
-      return {
-        free,
-        size
-      }
-    } catch (error) {
-      logger.error('check disk space error', error as Error)
-      return null
-    }
-  })
 
   // ExternalApps
   ipcMain.handle(IpcChannel.ExternalApps_DetectInstalled, () => externalAppsService.detectInstalledApps())

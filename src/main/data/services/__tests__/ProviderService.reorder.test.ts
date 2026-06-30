@@ -1,7 +1,11 @@
+// Load the sibling so it self-registers in the data-service registry (prod loads it via its DataApi handler).
+import '@data/services/ProviderRegistryService'
+
 import { userProviderTable } from '@data/db/schemas/userProvider'
 import { providerService } from '@data/services/ProviderService'
 import { generateOrderKeySequence } from '@data/services/utils/orderKey'
 import { ErrorCode } from '@shared/data/api'
+import { CHERRYAI_PROVIDER_ID } from '@shared/data/presets/cherryai'
 import { setupTestDatabase } from '@test-helpers/db'
 import { asc, eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
@@ -26,11 +30,14 @@ describe('ProviderService reorder', () => {
   it('creates new providers at the end of the list', async () => {
     await seedProviders()
 
-    await providerService.create({ providerId: 'grok', name: 'Grok' })
+    const created = await providerService.create({ providerId: 'grok', name: 'Grok' })
 
     const rows = await dbh.db.select().from(userProviderTable).where(eq(userProviderTable.providerId, 'grok')).limit(1)
 
     expect(rows[0]?.orderKey).toBeTruthy()
+    // New providers are created disabled; the auto-enable flow turns them on once models exist.
+    expect(created.isEnabled).toBe(false)
+    expect(rows[0]?.isEnabled).toBe(false)
     expect(await readOrder()).toEqual(['openai', 'anthropic', 'gemini', 'grok'])
   })
 
@@ -109,5 +116,25 @@ describe('ProviderService reorder', () => {
       code: ErrorCode.NOT_FOUND,
       details: { resource: 'Provider', id: 'missing' }
     })
+  })
+
+  it('rejects moving the managed CherryAI provider', async () => {
+    await seedProviders()
+    await dbh.db.insert(userProviderTable).values({
+      providerId: CHERRYAI_PROVIDER_ID,
+      name: 'CherryAI',
+      orderKey: 'z0',
+      isEnabled: true
+    })
+
+    await expect(providerService.move(CHERRYAI_PROVIDER_ID, { position: 'first' })).rejects.toMatchObject({
+      code: ErrorCode.INVALID_OPERATION
+    })
+    await expect(
+      providerService.reorder([{ id: CHERRYAI_PROVIDER_ID, anchor: { position: 'last' } }])
+    ).rejects.toMatchObject({
+      code: ErrorCode.INVALID_OPERATION
+    })
+    expect(await readOrder()).toEqual(['openai', 'anthropic', 'gemini', CHERRYAI_PROVIDER_ID])
   })
 })

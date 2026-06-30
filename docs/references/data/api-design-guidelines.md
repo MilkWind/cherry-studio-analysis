@@ -13,6 +13,27 @@ Guidelines for designing RESTful APIs in the Cherry Studio Data API system.
 | Express hierarchy via nesting | `/topics/:topicId/messages` | Parent-child relationships |
 | Avoid verbs for CRUD operations | `/topics` not `/getTopics` | HTTP methods express action |
 
+## Resource ↔ Table Naming
+
+When a route is backed by a SQLite table, the route, table, and type names MUST express one shared domain noun, each in its own layer's casing:
+
+| Layer | Convention | Example |
+|---|---|---|
+| DB table | singular snake_case | `agent_session` |
+| REST route (collection) | plural kebab-case | `/agent-sessions` |
+| Schema / entity type | singular PascalCase | `AgentSessionEntity` |
+| Inferred row type | `XxxRow` ([§5.3](../naming-conventions.md#53-drizzle-schema-inferred-row-types)) | `AgentSessionRow` |
+
+A route noun that diverges from its backing table's concept is drift — fix the route, not the table.
+
+**Exceptions** (noun diverges from a single table):
+
+| Case | Example |
+|---|---|
+| Shared / library resource | `/skills`, `/models` |
+| Nested sub-resource | `/agents/:agentId/tasks` |
+| Aggregate / derived / non-CRUD | `/topics/search`, `/topics/stats` |
+
 ## HTTP Method Semantics
 
 | Method | Purpose | Idempotent | Typical Response |
@@ -193,10 +214,13 @@ Use verb-based paths for operations that don't fit CRUD semantics:
 
 | Purpose | Pattern | Example |
 |---------|---------|---------|
-| Pagination | `page` + `limit` | `?page=1&limit=20` |
-| Sorting | `orderBy` + `order` | `?orderBy=createdAt&order=desc` |
+| Pagination (offset) | `page` + `limit` | `?page=1&limit=20` |
+| Pagination (cursor) | `cursor` + `limit` | `?cursor=1700000000000:abc&limit=20` |
+| Sorting | `sortBy` + `sortOrder` (see `SortParams` in [api-types.md](api-types.md)) | `?sortBy=createdAt&sortOrder=desc` |
 | Filtering | direct field names | `?status=active&type=chat` |
 | Search | `q` or `search` | `?q=keyword` |
+
+For offset-vs-cursor selection and the `<key>:<id>` cursor wire format, see the [Pagination Guide](./data-pagination-guide.md).
 
 ## Response Status Codes
 
@@ -410,7 +434,7 @@ full API contract and the "do not replace pre-validation" discipline note.
 |---------|------|---------|
 | Paths | kebab-case, plural | `/user-settings`, `/topics` |
 | Path params | camelCase | `:topicId`, `:messageId` |
-| Query params | camelCase | `orderBy`, `pageSize` |
+| Query params | camelCase | `sortBy`, `pageSize` |
 | Body fields | camelCase | `createdAt`, `userName` |
 | Error codes | SCREAMING_SNAKE | `NOT_FOUND`, `VALIDATION_ERROR` |
 
@@ -428,6 +452,16 @@ All three conditions must be met before adding a DataApi endpoint:
 
 If any condition is not met, use an IPC handler in `src/main/ipc.ts` or a lifecycle service instead.
 
+Meeting all three is **necessary but not sufficient** — the operation must also satisfy the side-effect boundary below.
+
+### Hard Rule: No Non-Data Side Effects
+
+A DataApi handler and the service behind it may perform **one kind of effect only: SQLite reads/writes via Drizzle.** Any filesystem, network, process-spawn, child-window, or external-service call on a DataApi code path is a boundary violation — **regardless of how many layers deep it is hidden, and even when the operation also legitimately writes the database.**
+
+DataApiService is the **data** business-logic layer (persisting and querying records), **not** the application's business-logic layer. A non-data side effect bundled into a DB write is still a non-data side effect.
+
+**Mixed operations** ("write a row *and* write a file") are split: a business/lifecycle service in main owns the orchestration and the side effect, calls the Entity Service for the DB part, and is triggered from the renderer via a dedicated IPC channel. The side effect never rides through DataApi.
+
 ### Anti-patterns: What Does NOT Belong in DataApi
 
 | Anti-pattern | Why It's Wrong | Correct Approach |
@@ -439,7 +473,7 @@ If any condition is not met, use an IPC handler in `src/main/ipc.ts` or a lifecy
 | `POST /backup/start` | Complex workflow orchestration, not CRUD | IPC: `IpcChannel.Backup_Backup` |
 | `POST /auth/login` | OAuth flow, external service integration | IPC: dedicated auth handler |
 | `GET /mcp/tools` | Runtime service query, not persisted data | IPC: `IpcChannel.Mcp_ListTools` |
-| `POST /jobs` (enqueue) / `DELETE /jobs/:id` (cancel) | Workflow command on `JobManager` infrastructure, not CRUD | Business service in main calls `application.get('JobManager').enqueue(...)` / `.cancel(...)`. For renderer-initiated triggering, use a dedicated IPC channel (e.g. `IpcChannel.Knowledge_IndexFile`). Job DataApi is GET-only. |
+| `POST /jobs` (enqueue) / `DELETE /jobs/:id` (cancel) | Workflow command on `JobManager` infrastructure, not CRUD | Business service in main calls `application.get('JobManager').enqueue(...)` / `.cancel(...)`. For renderer-initiated triggering, use a dedicated IpcApi route (e.g. `knowledge.add_items`). Job DataApi is GET-only. |
 
 ### Why Misuse is Harmful
 
@@ -603,4 +637,4 @@ Why the two differ:
 **Implication for reviewers**:
 
 - Don't copy a `${}` template from a cache key into `refresh` options. `refresh: ['/providers/${providerId}/*']` is a bug — the `${}` is left as a literal string, not interpolated. Use template literal backticks (`` `/providers/${providerId}/*` ``) or compute the key in the function-form refresh.
-- Cache same-value writes short-circuit via `lodash.isEqual` (no broadcast, no subscriber fire). DataApi `refresh` has no such short-circuit — each call triggers a refetch.
+- Cache same-value writes short-circuit via `isEqual` from es-toolkit/compat (no broadcast, no subscriber fire). DataApi `refresh` has no such short-circuit — each call triggers a refetch.

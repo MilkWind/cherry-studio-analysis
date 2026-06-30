@@ -15,27 +15,33 @@ import type {
   ListKnowledgeBasesQuery,
   UpdateKnowledgeBaseDto
 } from '@shared/data/api/schemas/knowledges'
+import type { EntitySearchItem } from '@shared/data/api/schemas/search'
 import { knowledgeItemSourceType } from '@shared/data/types/file/ref'
 import {
   type CreateKnowledgeBaseDto,
   DEFAULT_KNOWLEDGE_BASE_CHUNK_OVERLAP,
   DEFAULT_KNOWLEDGE_BASE_CHUNK_SIZE,
   DEFAULT_KNOWLEDGE_BASE_STATUS,
+  DEFAULT_KNOWLEDGE_CHUNK_SEPARATOR,
+  DEFAULT_KNOWLEDGE_CHUNK_STRATEGY,
   DEFAULT_KNOWLEDGE_SEARCH_MODE,
   type KnowledgeBase,
   KnowledgeBaseSchema
 } from '@shared/data/types/knowledge'
-import { and, count as sqlCount, desc, eq, ne, sql } from 'drizzle-orm'
+import { and, asc, count as sqlCount, desc, eq, gte, ne, type SQL, sql } from 'drizzle-orm'
 
 import { nullsToUndefined, timestampToISO } from './utils/rowMappers'
 
 const logger = loggerService.withContext('DataApi:KnowledgeBaseService')
 
 type KnowledgeBaseRow = typeof knowledgeBaseTable.$inferSelect
+type KnowledgeBaseEntitySearchItem = Extract<EntitySearchItem, { type: 'knowledge-base' }>
 
 function validateKnowledgeBaseConfig(config: {
   chunkSize: number
   chunkOverlap: number
+  chunkStrategy?: string | null
+  chunkSeparator?: string | null
   searchMode?: string | null
   hybridAlpha?: number | null
 }): Record<string, string[]> {
@@ -43,6 +49,10 @@ function validateKnowledgeBaseConfig(config: {
 
   if (config.chunkOverlap >= config.chunkSize) {
     fieldErrors.chunkOverlap = ['Chunk overlap must be smaller than chunk size']
+  }
+
+  if (config.chunkStrategy === 'delimiter' && !config.chunkSeparator) {
+    fieldErrors.chunkSeparator = ['Separator is required when chunk strategy is delimiter']
   }
 
   if (config.hybridAlpha != null && config.searchMode !== 'hybrid') {
@@ -67,15 +77,66 @@ function rowToKnowledgeBase(row: KnowledgeBaseRow): KnowledgeBase {
   })
 }
 
+function buildSearchPredicate(search: string | undefined): SQL | undefined {
+  const trimmed = search?.trim()
+  if (!trimmed) return undefined
+
+  const pattern = `%${trimmed.replace(/[\\%_]/g, '\\$&')}%`
+  return sql`${knowledgeBaseTable.name} LIKE ${pattern} ESCAPE '\\'`
+}
+
 export class KnowledgeBaseService {
   private get db() {
     return application.get('DbService').getDb()
   }
 
+  async search(query: { q: string; limit: number; updatedAtFrom?: number }): Promise<KnowledgeBaseEntitySearchItem[]> {
+    const conditions: SQL[] = []
+    const search = buildSearchPredicate(query.q)
+    if (search) conditions.push(search)
+    if (query.updatedAtFrom !== undefined) {
+      conditions.push(gte(knowledgeBaseTable.updatedAt, query.updatedAtFrom))
+    }
+
+    const rows = await this.db
+      .select({
+        id: knowledgeBaseTable.id,
+        name: knowledgeBaseTable.name,
+        updatedAt: knowledgeBaseTable.updatedAt
+      })
+      .from(knowledgeBaseTable)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(knowledgeBaseTable.updatedAt), asc(knowledgeBaseTable.id))
+      .limit(query.limit)
+
+    return rows.map((row) => ({
+      type: 'knowledge-base',
+      id: row.id,
+      title: row.name,
+      updatedAt: timestampToISO(row.updatedAt),
+      target: { knowledgeBaseId: row.id }
+    }))
+  }
+
   async list(query: ListKnowledgeBasesQuery): Promise<OffsetPaginationResponse<KnowledgeBaseListItem>> {
     const { page, limit } = query
     const offset = (page - 1) * limit
-
+    const conditions: SQL[] = []
+    const search = buildSearchPredicate(query.search)
+    if (search) conditions.push(search)
+    if (query.updatedAtFrom !== undefined) {
+      conditions.push(gte(knowledgeBaseTable.updatedAt, Date.parse(query.updatedAtFrom)))
+    }
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined
+    const sortBy = query.sortBy ?? 'createdAt'
+    const sortOrder = query.sortOrder ?? 'desc'
+    const orderFn = sortOrder === 'asc' ? asc : desc
+    const sortByToColumn = {
+      createdAt: knowledgeBaseTable.createdAt,
+      updatedAt: knowledgeBaseTable.updatedAt,
+      name: knowledgeBaseTable.name
+    } as const
+    const sortColumn = sortByToColumn[sortBy]
     const [rows, [{ count }]] = await Promise.all([
       this.db
         .select({
@@ -88,10 +149,11 @@ export class KnowledgeBaseService {
           and(eq(knowledgeItemTable.baseId, knowledgeBaseTable.id), ne(knowledgeItemTable.status, 'deleting'))
         )
         .groupBy(knowledgeBaseTable.id)
-        .orderBy(desc(knowledgeBaseTable.createdAt), desc(knowledgeBaseTable.id))
+        .where(whereClause)
+        .orderBy(orderFn(sortColumn), orderFn(knowledgeBaseTable.id))
         .limit(limit)
         .offset(offset),
-      this.db.select({ count: sql<number>`count(*)` }).from(knowledgeBaseTable)
+      this.db.select({ count: sql<number>`count(*)` }).from(knowledgeBaseTable).where(whereClause)
     ])
 
     return {
@@ -118,6 +180,8 @@ export class KnowledgeBaseService {
     const createConfig = {
       chunkSize: dto.chunkSize ?? DEFAULT_KNOWLEDGE_BASE_CHUNK_SIZE,
       chunkOverlap: dto.chunkOverlap ?? DEFAULT_KNOWLEDGE_BASE_CHUNK_OVERLAP,
+      chunkStrategy: dto.chunkStrategy ?? DEFAULT_KNOWLEDGE_CHUNK_STRATEGY,
+      chunkSeparator: dto.chunkSeparator ?? DEFAULT_KNOWLEDGE_CHUNK_SEPARATOR,
       searchMode: dto.searchMode ?? DEFAULT_KNOWLEDGE_SEARCH_MODE,
       hybridAlpha: dto.hybridAlpha
     }
@@ -137,6 +201,8 @@ export class KnowledgeBaseService {
       fileProcessorId: dto.fileProcessorId ?? null,
       chunkSize: createConfig.chunkSize,
       chunkOverlap: createConfig.chunkOverlap,
+      chunkStrategy: createConfig.chunkStrategy,
+      chunkSeparator: createConfig.chunkSeparator,
       threshold: dto.threshold ?? null,
       documentCount: dto.documentCount ?? null,
       searchMode: createConfig.searchMode,
@@ -159,11 +225,15 @@ export class KnowledgeBaseService {
     const nextConfig: {
       chunkSize: number
       chunkOverlap: number
+      chunkStrategy: KnowledgeBase['chunkStrategy']
+      chunkSeparator: KnowledgeBase['chunkSeparator']
       searchMode: KnowledgeBase['searchMode']
       hybridAlpha: number | null | undefined
     } = {
       chunkSize: dto.chunkSize !== undefined ? dto.chunkSize : existing.chunkSize,
       chunkOverlap: dto.chunkOverlap !== undefined ? dto.chunkOverlap : existing.chunkOverlap,
+      chunkStrategy: dto.chunkStrategy !== undefined ? dto.chunkStrategy : existing.chunkStrategy,
+      chunkSeparator: dto.chunkSeparator !== undefined ? dto.chunkSeparator : existing.chunkSeparator,
       searchMode: dto.searchMode !== undefined ? dto.searchMode : existing.searchMode,
       hybridAlpha: dto.hybridAlpha !== undefined ? dto.hybridAlpha : existing.hybridAlpha
     }
@@ -196,6 +266,12 @@ export class KnowledgeBaseService {
     }
     if (nextConfig.chunkOverlap !== existing.chunkOverlap) {
       updates.chunkOverlap = nextConfig.chunkOverlap
+    }
+    if (nextConfig.chunkStrategy !== existing.chunkStrategy) {
+      updates.chunkStrategy = nextConfig.chunkStrategy
+    }
+    if (nextConfig.chunkSeparator !== existing.chunkSeparator) {
+      updates.chunkSeparator = nextConfig.chunkSeparator
     }
     if (dto.threshold !== undefined && dto.threshold !== existing.threshold) {
       updates.threshold = dto.threshold

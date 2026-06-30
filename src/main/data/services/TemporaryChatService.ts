@@ -24,6 +24,7 @@ import type { Topic } from '@shared/data/types/topic'
 import { eq, isNull } from 'drizzle-orm'
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid'
 
+import { messageService } from './MessageService'
 import { insertWithOrderKey } from './utils/orderKey'
 
 const logger = loggerService.withContext('DataApi:TemporaryChatService')
@@ -67,19 +68,14 @@ export class TemporaryChatService {
   private messages = new Map<string, TemporaryMessageRow[]>()
 
   async createTopic(dto: CreateTopicDto): Promise<Topic> {
-    if (dto.sourceNodeId != null) {
-      throw DataApiErrorFactory.validation({
-        sourceNodeId: ['fork (sourceNodeId) is not supported for temporary chats']
-      })
-    }
     const now = Date.now()
     const row: TemporaryTopicRow = {
       id: uuidv4(),
       name: dto.name ?? '',
       isNameManuallyEdited: false,
-      assistantId: dto.assistantId ?? null,
-      activeNodeId: null,
-      groupId: dto.groupId ?? null,
+      assistantId: dto.assistantId,
+      activeNodeId: undefined,
+      groupId: dto.groupId,
       // In-memory store has no real ordering — temp topics are scoped per
       // session and never reordered or paginated like persistent ones.
       orderKey: '',
@@ -123,7 +119,6 @@ export class TemporaryChatService {
       siblingsGroupId: 0,
       modelId: dto.modelId ?? null,
       modelSnapshot: dto.modelSnapshot ?? null,
-      traceId: dto.traceId ?? null,
       stats: dto.stats ?? null,
       createdAt: now,
       updatedAt: now
@@ -189,13 +184,14 @@ export class TemporaryChatService {
         // pattern used for the other fields converts `null` to `undefined`
         // so Drizzle omits the column entirely, letting the DB default apply.
         const groupIdForScope = topic.groupId ?? null
+        const assistantId = topic.assistantId ?? undefined
         await insertWithOrderKey(
           tx,
           topicTable,
           {
             id: topic.id,
             name: topic.name ?? undefined,
-            assistantId: topic.assistantId ?? undefined,
+            assistantId,
             groupId: topic.groupId ?? undefined
           },
           {
@@ -204,8 +200,10 @@ export class TemporaryChatService {
           }
         )
 
-        // 3. Linearize: parentId[i] = msgs[i-1].id. First message's parent is null.
-        let prevId: string | null = null
+        // 3. Create the topic's virtual root, then linearize buffered messages under it:
+        // the first message hangs off the root, then parentId[i] = msgs[i-1].id.
+        const rootId = await messageService.createRootMessageTx(tx, topic.id)
+        let prevId: string = rootId
         for (const m of msgs) {
           await tx.insert(messageTable).values({
             id: m.id,
@@ -217,14 +215,13 @@ export class TemporaryChatService {
             siblingsGroupId: 0,
             modelId: m.modelId ?? undefined,
             modelSnapshot: m.modelSnapshot ?? undefined,
-            traceId: m.traceId ?? undefined,
             stats: m.stats ?? undefined
           })
           prevId = m.id
         }
 
-        // 4. Set activeNodeId to the last message (if any).
-        if (prevId) {
+        // 4. Set activeNodeId to the last real message (still the root → no messages, leave null).
+        if (prevId !== rootId) {
           await tx.update(topicTable).set({ activeNodeId: prevId }).where(eq(topicTable.id, topic.id))
         }
       })

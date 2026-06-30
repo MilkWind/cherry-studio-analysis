@@ -1,7 +1,8 @@
 import { loggerService } from '@logger'
-import { nanoid } from '@reduxjs/toolkit'
-import { getMcpServerType, type MCPServer } from '@renderer/types'
+import { getMcpServerType } from '@renderer/types/mcp'
+import type { McpServer } from '@shared/data/types/mcpServer'
 import i18next from 'i18next'
+import { nanoid } from 'nanoid'
 
 const logger = loggerService.withContext('ModelScopeSyncUtils')
 
@@ -38,7 +39,7 @@ interface ModelScopeServer {
 interface ModelScopeSyncResult {
   success: boolean
   message: string
-  allServers: MCPServer[]
+  allServers: McpServer[]
   errorDetails?: string
 }
 
@@ -88,14 +89,14 @@ export const syncModelScopeServers = async (token: string): Promise<ModelScopeSy
     }
 
     // Transform ModelScope servers to MCP servers format
-    const allServers: MCPServer[] = []
+    const allServers: McpServer[] = []
     logger.debug('ModelScope servers:', servers)
     for (const server of servers) {
       try {
         if (!server.operational_urls?.[0]?.url) continue
 
         const url = server.operational_urls[0].url
-        const mcpServer: MCPServer = {
+        const mcpServer: McpServer = {
           id: `@modelscope/${server.id}`,
           name: server.chinese_name || server.name || `ModelScope Server ${nanoid()}`,
           description: server.description || '',

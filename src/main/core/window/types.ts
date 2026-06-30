@@ -294,6 +294,17 @@ interface WindowTypeMetadataBase {
    * @default 'auto'
    */
   showMode?: 'auto' | 'immediate' | 'manual'
+  /**
+   * Persist this window's position/size across launches and restore it on the
+   * next open (onto the display it was last on). Singleton-only — identity is
+   * the window type, which is unambiguous only for a single instance; declaring
+   * it on a non-singleton type is ignored with a dev warning. The maximized
+   * flag is persisted too, but re-applying maximize is left to the consumer
+   * (timing is coupled to each window's show choreography). Runtime-toggleable
+   * via `wm.setRememberBounds(type, enabled)`, which overrides this default.
+   * @default false
+   */
+  rememberBounds?: boolean
   /** Electron `BrowserWindow` constructor parameters (plus `platformOverrides`). */
   windowOptions: WindowOptions
   /**
@@ -370,7 +381,7 @@ export interface WindowInfo {
  *   - synchronously written into `initDataStore` before `open()` returns
  *     (so renderer `getInitData` invokes always see the fresh value);
  *   - for reuse paths (pool recycle / singleton reopen), also pushed to the
- *     renderer via `IpcChannel.WindowManager_Reused` as the event payload.
+ *     renderer via the IpcApi `window.reused` event as the payload.
  *
  * Never pushed for fresh-window paths (pooled new / default / singleton first /
  * `create()` — all create paths), because the renderer is not yet ready to

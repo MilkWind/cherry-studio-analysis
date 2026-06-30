@@ -1,5 +1,6 @@
 import { Badge, MenuDivider, MenuItem, MenuList, PageHeader } from '@cherrystudio/ui'
 import Scrollbar from '@renderer/components/Scrollbar'
+import { getWebSearchCapabilityTitleKey } from '@renderer/utils/webSearchProviderMeta'
 import { Globe } from 'lucide-react'
 import type { FC } from 'react'
 import { Fragment, useEffect, useMemo, useState } from 'react'
@@ -18,7 +19,6 @@ import { WebSearchGeneralSettings } from './components/WebSearchGeneralSettings'
 import WebSearchProviderLogo from './components/WebSearchProviderLogo'
 import { WebSearchProviderSetting } from './components/WebSearchProviderSetting'
 import { useWebSearchProviderLists } from './hooks/useWebSearchProviderLists'
-import { getWebSearchCapabilityTitleKey } from './utils/webSearchProviderMeta'
 
 const WebSearchSettings: FC = () => {
   const { t } = useTranslation()
@@ -47,8 +47,8 @@ const WebSearchSettings: FC = () => {
   }, [activeEntry, activeKey])
 
   return (
-    <div className="flex flex-1">
-      <div className="flex h-[calc(100vh-var(--navbar-height)-6px)] w-full flex-1 flex-row overflow-hidden">
+    <div className="flex min-w-0 flex-1">
+      <div className="flex h-[calc(100vh-var(--navbar-height)-6px)] w-full min-w-0 flex-1 flex-row overflow-hidden">
         <div className={`flex flex-col ${settingsSubmenuScrollClassName}`}>
           <PageHeader title={t('settings.tool.websearch.title')} />
           <Scrollbar className="min-h-0 flex-1">
@@ -105,7 +105,7 @@ const WebSearchSettings: FC = () => {
             </MenuList>
           </Scrollbar>
         </div>
-        <div className={`${settingsContentScrollClassName} relative flex`}>
+        <div className={`${settingsContentScrollClassName} relative flex min-w-0 flex-col`}>
           {activeEntry ? (
             <WebSearchProviderSetting
               key={activeEntry.key}

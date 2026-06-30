@@ -1,7 +1,7 @@
-import { useKnowledgeBases } from '@renderer/hooks/useKnowledgeBases'
+import { useKnowledgeBases } from '@renderer/hooks/useKnowledgeBase'
 import { useAddKnowledgeItems } from '@renderer/hooks/useKnowledgeItems'
-import type { FileMetadata } from '@renderer/types'
-import type { Message } from '@renderer/types/newMessage'
+import type { FileMetadata } from '@renderer/types/file'
+import type { MessageExportView } from '@renderer/types/messageExport'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => ({
   }
 }))
 
-vi.mock('@renderer/hooks/useKnowledgeBases', () => ({
+vi.mock('@renderer/hooks/useKnowledgeBase', () => ({
   useKnowledgeBases: vi.fn()
 }))
 
@@ -44,7 +44,7 @@ vi.mock('@renderer/utils/knowledge', () => ({
     FILE: 'files',
     IMAGES: 'images'
   },
-  analyzeMessageContent: (message: Message & { testFiles?: FileMetadata[] }) => ({
+  analyzeMessageContent: (message: MessageExportView & { testFiles?: FileMetadata[] }) => ({
     text: 0,
     code: 0,
     thinking: 0,
@@ -86,7 +86,7 @@ vi.mock('@cherrystudio/ui', async (importOriginal) => {
   }
 })
 
-async function renderPopup(source: Message) {
+async function renderPopup(source: MessageExportView) {
   const { default: SaveToKnowledgePopup } = await import('../SaveToKnowledgePopup')
 
   const promise = SaveToKnowledgePopup.show({ source: { type: 'message', data: source } })
@@ -110,7 +110,7 @@ function createFile(path: string, id: string): FileMetadata {
   }
 }
 
-function createMessageWithFiles(files: FileMetadata[]): Message {
+function createMessageWithFiles(files: FileMetadata[]): MessageExportView {
   return {
     id: 'message-1',
     role: 'user',
@@ -118,9 +118,9 @@ function createMessageWithFiles(files: FileMetadata[]): Message {
     topicId: 'topic-1',
     createdAt: '2026-05-27T00:00:00.000Z',
     status: 'success',
-    blocks: files.map((file) => `${file.id}-block`),
+    parts: [],
     testFiles: files
-  } as Message
+  } as MessageExportView & { testFiles: FileMetadata[] }
 }
 
 describe('SaveToKnowledgePopup', () => {
@@ -130,7 +130,7 @@ describe('SaveToKnowledgePopup', () => {
       configurable: true,
       value: vi.fn()
     })
-    mocks.processMessageContent.mockImplementation((message: Message & { testFiles?: FileMetadata[] }) => ({
+    mocks.processMessageContent.mockImplementation((message: MessageExportView & { testFiles?: FileMetadata[] }) => ({
       text: '',
       files: message.testFiles ?? []
     }))
@@ -144,12 +144,7 @@ describe('SaveToKnowledgePopup', () => {
     Object.assign(window, {
       api: {
         file: {
-          ensureExternalEntry: vi.fn(async ({ externalPath }: { externalPath: string }) => ({
-            id:
-              externalPath === '/tmp/ok.pdf'
-                ? '019606a0-0000-7000-8000-000000000001'
-                : '019606a0-0000-7000-8000-000000000002'
-          }))
+          ensureExternalEntry: vi.fn()
         }
       },
       toast: mocks.toast
@@ -174,7 +169,7 @@ describe('SaveToKnowledgePopup', () => {
           type: 'file',
           data: {
             source: '/tmp/ok.pdf',
-            fileEntryId: '019606a0-0000-7000-8000-000000000001'
+            path: '/tmp/ok.pdf'
           }
         }
       ])

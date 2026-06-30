@@ -2,14 +2,13 @@ import type { KnowledgeSelectOption } from '@renderer/pages/knowledge/types'
 import type { KnowledgeSearchMode } from '@shared/data/types/knowledge'
 import { useTranslation } from 'react-i18next'
 
+import { isRerankModel, KnowledgeModelSelect } from '../../components/KnowledgeModelSelect'
 import { RagFieldLabel, RagSelectField, RagSliderField } from './panelPrimitives'
 
-const EMPTY_OPTION_VALUE = '__none__'
 const DEFAULT_HYBRID_ALPHA = 0.5
 
 interface RetrievalSectionProps {
   searchModeOptions: KnowledgeSelectOption[]
-  rerankModelOptions: KnowledgeSelectOption[]
   documentCount: number
   threshold: number
   searchMode: KnowledgeSearchMode
@@ -24,7 +23,6 @@ interface RetrievalSectionProps {
 
 const RetrievalSection = ({
   searchModeOptions,
-  rerankModelOptions,
   documentCount,
   threshold,
   searchMode,
@@ -38,7 +36,7 @@ const RetrievalSection = ({
 }: RetrievalSectionProps) => {
   const { t } = useTranslation()
   const isHybridMode = searchMode === 'hybrid'
-  const usesRelevanceThreshold = searchMode === 'default'
+  const usesRelevanceThreshold = searchMode === 'vector' || rerankModelId !== null
 
   return (
     <div className="flex flex-col gap-4">
@@ -55,19 +53,20 @@ const RetrievalSection = ({
         formatValue={(value) => String(value)}
       />
 
-      <RagSliderField
-        label={t('knowledge.rag.threshold')}
-        hint={t(usesRelevanceThreshold ? 'knowledge.rag.hints.threshold' : 'knowledge.rag.hints.threshold_disabled')}
-        value={threshold}
-        onValueChange={onThresholdChange}
-        min={0}
-        max={1}
-        step={0.1}
-        minLabel="0.0"
-        maxLabel="1.0"
-        formatValue={(value) => value.toFixed(1)}
-        disabled={!usesRelevanceThreshold}
-      />
+      {usesRelevanceThreshold ? (
+        <RagSliderField
+          label={t('knowledge.rag.threshold')}
+          hint={t('knowledge.rag.hints.threshold')}
+          value={threshold}
+          onValueChange={onThresholdChange}
+          min={0}
+          max={1}
+          step={0.1}
+          minLabel="0.0"
+          maxLabel="1.0"
+          formatValue={(value) => value.toFixed(1)}
+        />
+      ) : null}
 
       <div>
         <RagFieldLabel label={t('knowledge.rag.search_mode.title')} hint={t('knowledge.rag.hints.search_mode')} />
@@ -95,10 +94,14 @@ const RetrievalSection = ({
 
       <div>
         <RagFieldLabel label={t('knowledge.rag.rerank_model')} hint={t('knowledge.rag.hints.rerank_model')} />
-        <RagSelectField
-          value={rerankModelId ?? EMPTY_OPTION_VALUE}
-          options={[{ value: EMPTY_OPTION_VALUE, label: t('knowledge.rag.rerank_disabled') }, ...rerankModelOptions]}
-          onValueChange={(value) => onRerankModelChange(value === EMPTY_OPTION_VALUE ? null : value)}
+        <KnowledgeModelSelect
+          aria-label={t('knowledge.rag.rerank_model')}
+          value={rerankModelId}
+          placeholder={t('knowledge.rag.rerank_disabled')}
+          filter={isRerankModel}
+          allowClear
+          clearAriaLabel={t('knowledge.rag.rerank_disabled')}
+          onChange={onRerankModelChange}
         />
       </div>
     </div>

@@ -98,7 +98,7 @@ vi.mock('@application', () => ({
         return { getMainWindow: vi.fn() }
       }
       if (name === 'WindowManager') {
-        return { broadcastToType: vi.fn(), getWindowsByType: vi.fn(() => []), getAllWindows: vi.fn(() => []) }
+        return { broadcastToType: vi.fn(), getWindowsByType: vi.fn(() => []) }
       }
       throw new Error(`[MockApplication] Unknown service: ${name}`)
     }),
@@ -118,7 +118,7 @@ vi.mock('../S3Storage', () => ({
 }))
 
 vi.mock('archiver', () => ({
-  default: vi.fn()
+  ZipArchive: vi.fn()
 }))
 
 vi.mock('node-stream-zip', () => ({

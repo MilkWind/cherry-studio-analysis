@@ -6,15 +6,16 @@ import ProviderSetting from '../ProviderSetting'
 const useProviderMock = vi.fn()
 const useProviderAutoModelSyncMock = vi.fn()
 const useProviderOnboardingAutoEnableMock = vi.fn()
-const useProviderLegacyWebSearchSyncMock = vi.fn()
+const openHealthCheckMock = vi.fn()
+const authenticationSectionPropsSpy = vi.fn()
 
-vi.mock('@renderer/context/ThemeProvider', () => ({
+vi.mock('@renderer/hooks/useTheme', () => ({
   useTheme: () => ({
     theme: 'light'
   })
 }))
 
-vi.mock('@renderer/hooks/useProviders', () => ({
+vi.mock('@renderer/hooks/useProvider', () => ({
   useProvider: (...args: any[]) => useProviderMock(...args)
 }))
 
@@ -26,20 +27,26 @@ vi.mock('../hooks/providerSetting/useProviderOnboardingAutoEnable', () => ({
   useProviderOnboardingAutoEnable: (...args: any[]) => useProviderOnboardingAutoEnableMock(...args)
 }))
 
-vi.mock('../hooks/providerSetting/useProviderLegacyWebSearchSync', () => ({
-  useProviderLegacyWebSearchSync: (...args: any[]) => useProviderLegacyWebSearchSyncMock(...args)
-}))
-
 vi.mock('../components/ProviderHeader', () => ({
   default: ({ providerId }: any) => <div>{`provider-header-${providerId}`}</div>
 }))
 
 vi.mock('../ConnectionSettings/AuthenticationSection', () => ({
-  default: ({ providerId }: any) => <div>{`authentication-section-${providerId}`}</div>
+  default: (props: any) => {
+    authenticationSectionPropsSpy(props)
+    return <div>{`authentication-section-${props.providerId}`}</div>
+  }
 }))
 
 vi.mock('../ModelList', () => ({
   ModelList: ({ providerId }: any) => <div>{`model-list-${providerId}`}</div>
+}))
+
+vi.mock('../ModelList/modelListHealthContext', () => ({
+  ModelListHealthProvider: ({ children }: any) => <>{children}</>,
+  useModelListHealth: () => ({
+    openHealthCheck: openHealthCheckMock
+  })
 }))
 
 describe('ProviderSetting', () => {
@@ -57,6 +64,19 @@ describe('ProviderSetting', () => {
     expect(screen.getByText('provider-header-openai')).toBeInTheDocument()
     expect(screen.getByText('authentication-section-openai')).toBeInTheDocument()
     expect(screen.getByText('model-list-openai')).toBeInTheDocument()
+    expect(authenticationSectionPropsSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerId: 'openai',
+        onOpenModelHealthCheck: openHealthCheckMock
+      })
+    )
+  })
+
+  it('keeps the provider detail shell transparent so the settings background is continuous', () => {
+    render(<ProviderSetting providerId="openai" />)
+
+    expect(screen.getByTestId('provider-detail-shell')).not.toHaveClass('bg-background')
+    expect(screen.getByTestId('provider-detail-shell')).not.toHaveClass('bg-card')
   })
 
   it('renders the provider detail divider below the provider header, aligned to body content width', () => {
@@ -76,7 +96,6 @@ describe('ProviderSetting', () => {
       providerId: 'openai',
       isOnboarding: true
     })
-    expect(useProviderLegacyWebSearchSyncMock).toHaveBeenCalledWith('openai')
   })
 
   it('renders nothing when the provider is missing', () => {

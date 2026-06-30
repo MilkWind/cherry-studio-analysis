@@ -1,10 +1,9 @@
-import type { Tab } from '@renderer/hooks/useTabs'
+import type { Tab } from '@renderer/hooks/tab'
 import {
   Code,
   FileSearch,
   Folder,
   Globe,
-  Home,
   Languages,
   LayoutGrid,
   Library,
@@ -12,8 +11,7 @@ import {
   MousePointerClick,
   NotepadText,
   Palette,
-  Settings,
-  Sparkle
+  Settings
 } from 'lucide-react'
 
 import { OpenClawSidebarIcon } from '../Icons/SvgIcon'
@@ -23,11 +21,8 @@ export type IconComponent = React.FC<{ size?: number; strokeWidth?: number; clas
 // ─── Route → Icon mapping ─────────────────────────────────────────────────────
 
 export const ROUTE_ICONS: Record<string, IconComponent> = {
-  '/': Home,
-  '/home': Home,
   '/app/chat': MessageCircle,
   '/app/agents': MousePointerClick,
-  '/app/assistant': Sparkle,
   '/app/paintings': Palette,
   '/app/translate': Languages,
   '/app/mini-app': LayoutGrid,

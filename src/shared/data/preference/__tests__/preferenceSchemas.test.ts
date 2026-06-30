@@ -1,0 +1,36 @@
+import { describe, expect, it } from 'vitest'
+
+import type { PreferenceSchemas } from '../preferenceSchemas'
+import { DefaultPreferences } from '../preferenceSchemas'
+
+describe('DefaultPreferences', () => {
+  it('uses flat file processing default keys', () => {
+    const markdownConversionDefault: PreferenceSchemas['default']['feature.file_processing.default_document_to_markdown'] =
+      null
+
+    expect(markdownConversionDefault).toBeNull()
+    expect(DefaultPreferences.default['feature.file_processing.default_document_to_markdown']).toBeNull()
+    expect(DefaultPreferences.default['feature.file_processing.default_image_to_text']).toBeNull()
+    expect('feature.file_processing.default.document_to_markdown' in DefaultPreferences.default).toBe(false)
+    expect('feature.file_processing.default.image_to_text' in DefaultPreferences.default).toBe(false)
+  })
+
+  it('defaults the URL fetch web search provider to jina', () => {
+    const fetchUrlsDefault: PreferenceSchemas['default']['chat.web_search.default_fetch_urls_provider'] = 'jina'
+
+    expect(DefaultPreferences.default['chat.web_search.default_fetch_urls_provider']).toBe(fetchUrlsDefault)
+  })
+
+  it('defaults the keyword search web search provider to exa-mcp', () => {
+    const searchKeywordsDefault: PreferenceSchemas['default']['chat.web_search.default_search_keywords_provider'] =
+      'exa-mcp'
+
+    expect(DefaultPreferences.default['chat.web_search.default_search_keywords_provider']).toBe(searchKeywordsDefault)
+  })
+
+  it('groups agent sessions by agent for new users', () => {
+    const agentSessionDisplayDefault: PreferenceSchemas['default']['agent.session.display_mode'] = 'agent'
+
+    expect(DefaultPreferences.default['agent.session.display_mode']).toBe(agentSessionDisplayDefault)
+  })
+})

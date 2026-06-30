@@ -1,7 +1,8 @@
 import { Button, Input, PageSidePanelItem, Switch, Tooltip } from '@cherrystudio/ui'
-import { useProvider } from '@renderer/hooks/useProviders'
-import { cn } from '@renderer/utils'
+import { useProvider } from '@renderer/hooks/useProvider'
+import { cn } from '@renderer/utils/style'
 import type { Provider, RuntimeApiFeatures } from '@shared/data/types/provider'
+import { isAnthropicSupportedProvider } from '@shared/utils/provider'
 import { Info } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -9,7 +10,7 @@ import { useTranslation } from 'react-i18next'
 import ProviderActions from '../primitives/ProviderActions'
 import ProviderSettingsDrawer from '../primitives/ProviderSettingsDrawer'
 import { drawerClasses } from '../primitives/ProviderSettingsPrimitives'
-import { isAnthropicSupportedProvider, isAzureOpenAIProvider, isOpenAICompatibleProvider } from '../utils/provider'
+import { getProviderApiOptionsVisibility } from '../utils/providerApiOptions'
 
 interface ProviderApiOptionsDrawerProps {
   providerId: string
@@ -57,10 +58,6 @@ function OptionTitle({ id, label, help }: { id: string; label: string; help: str
   )
 }
 
-function isOpenAIOptionsProvider(provider: Provider): boolean {
-  return isOpenAICompatibleProvider(provider) || isAzureOpenAIProvider(provider)
-}
-
 export default function ProviderApiOptionsDrawer({ providerId, open, onClose }: ProviderApiOptionsDrawerProps) {
   const { t } = useTranslation()
   const { provider, updateProvider } = useProvider(providerId)
@@ -98,11 +95,6 @@ export default function ProviderApiOptionsDrawer({ providerId, open, onClose }: 
         help: t('settings.provider.api.options.service_tier.help')
       },
       {
-        key: 'enableThinking',
-        label: t('settings.provider.api.options.enable_thinking.label'),
-        help: t('settings.provider.api.options.enable_thinking.help')
-      },
-      {
         key: 'verbosity',
         label: t('settings.provider.api.options.verbosity.label'),
         help: t('settings.provider.api.options.verbosity.help')
@@ -116,6 +108,11 @@ export default function ProviderApiOptionsDrawer({ providerId, open, onClose }: 
       return []
     }
 
+    const visibility = getProviderApiOptionsVisibility(provider)
+    if (!visibility.showApiFeatureSettings) {
+      return []
+    }
+
     const items: ApiOption[] = [
       {
         key: 'arrayContent',
@@ -124,7 +121,7 @@ export default function ProviderApiOptionsDrawer({ providerId, open, onClose }: 
       }
     ]
 
-    if (isOpenAIOptionsProvider(provider)) {
+    if (visibility.isOpenAIProvider) {
       items.push(...openAIOptions)
     }
 

@@ -1,18 +1,17 @@
 import type { CompoundIcon } from '@cherrystudio/ui'
-import { Ai302, Bailian, Lanyun, Mcprouter, Modelscope, Tokenflux } from '@cherrystudio/ui/icons'
-import type { MCPServer } from '@renderer/types'
+import { Ai302, Bailian, Lanyun, Mcprouter, Modelscope } from '@cherrystudio/ui/icons'
+import type { McpServer } from '@shared/data/types/mcpServer'
 
 import { getAI302Token, saveAI302Token, syncAi302Servers } from './302ai'
 import { getBailianToken, saveBailianToken, syncBailianServers } from './bailian'
 import { getTokenLanYunToken, LANYUN_KEY_HOST, saveTokenLanYunToken, syncTokenLanYunServers } from './lanyun'
-import { getMCPRouterToken, saveMCPRouterToken, syncMCPRouterServers } from './mcprouter'
+import { getMcpRouterToken, saveMcpRouterToken, syncMcpRouterServers } from './mcprouter'
 import { getModelScopeToken, MODELSCOPE_HOST, saveModelScopeToken, syncModelScopeServers } from './modelscope'
-import { getTokenFluxToken, saveTokenFluxToken, syncTokenFluxServers, TOKENFLUX_HOST } from './tokenflux'
 
 export interface SyncResult {
   success: boolean
   message: string
-  allServers: MCPServer[]
+  allServers: McpServer[]
 }
 
 export interface ProviderConfig {
@@ -53,17 +52,6 @@ export const providers: ProviderConfig[] = [
     syncServers: syncModelScopeServers
   },
   {
-    key: 'tokenflux',
-    nameKey: 'TokenFlux',
-    descriptionKey: 'settings.mcp.sync.providerDescriptions.tokenflux',
-    discoverUrl: `${TOKENFLUX_HOST}/mcps`,
-    apiKeyUrl: `${TOKENFLUX_HOST}/dashboard/api-keys`,
-    tokenFieldName: 'tokenfluxToken',
-    getToken: getTokenFluxToken,
-    saveToken: saveTokenFluxToken,
-    syncServers: syncTokenFluxServers
-  },
-  {
     key: 'lanyun',
     nameKey: 'provider.lanyun',
     descriptionKey: 'settings.mcp.sync.providerDescriptions.lanyun',
@@ -92,9 +80,9 @@ export const providers: ProviderConfig[] = [
     discoverUrl: 'https://mcprouter.co',
     apiKeyUrl: 'https://mcprouter.co/settings/keys',
     tokenFieldName: 'mcprouterToken',
-    getToken: getMCPRouterToken,
-    saveToken: saveMCPRouterToken,
-    syncServers: syncMCPRouterServers
+    getToken: getMcpRouterToken,
+    saveToken: saveMcpRouterToken,
+    syncServers: syncMcpRouterServers
   }
 ]
 
@@ -108,13 +96,12 @@ export const getProviderDisplayName = (provider: ProviderConfig, t: (key: string
 
 const MCP_PROVIDER_ICONS: Record<string, CompoundIcon> = {
   modelscope: Modelscope,
-  tokenflux: Tokenflux,
   lanyun: Lanyun,
   '302ai': Ai302,
   bailian: Bailian,
   mcprouter: Mcprouter
 }
 
-export function getMCPProviderLogo(providerKey: string): CompoundIcon | undefined {
+export function getMcpProviderLogo(providerKey: string): CompoundIcon | undefined {
   return MCP_PROVIDER_ICONS[providerKey]
 }

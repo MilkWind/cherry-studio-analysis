@@ -4,13 +4,8 @@ export enum IpcChannel {
   App_SetLaunchOnBoot = 'app:set-launch-on-boot',
   App_SetEnableSpellCheck = 'app:set-enable-spell-check',
   App_SetSpellCheckLanguages = 'app:set-spell-check-languages',
-  App_CheckForUpdate = 'app:check-for-update',
-  App_QuitAndInstall = 'app:quit-and-install',
   Application_Quit = 'application:quit',
   App_Info = 'app:info',
-  App_SetAutoUpdate = 'app:set-auto-update',
-  App_SetTestPlan = 'app:set-test-plan',
-  App_SetTestChannel = 'app:set-test-channel',
   App_HandleZoomFactor = 'app:handle-zoom-factor',
   App_Select = 'app:select',
   App_HasWritePermission = 'app:has-write-permission',
@@ -27,11 +22,8 @@ export enum IpcChannel {
   App_ResetData = 'app:reset-data',
   App_IsBinaryExist = 'app:is-binary-exist',
   App_GetBinaryPath = 'app:get-binary-path',
-  App_InstallUvBinary = 'app:install-uv-binary',
-  App_InstallBunBinary = 'app:install-bun-binary',
   App_InstallOvmsBinary = 'app:install-ovms-binary',
   App_LogToMain = 'app:log-to-main',
-  App_GetDiskInfo = 'app:get-disk-info',
   App_GetSystemFonts = 'app:get-system-fonts',
   App_GetIpCountry = 'app:get-ip-country',
 
@@ -39,6 +31,10 @@ export enum IpcChannel {
   App_MacRequestProcessTrust = 'app:mac-request-process-trust',
 
   App_QuoteToMain = 'app:quote-to-main',
+
+  // StorageMonitor: main-process disk-space watcher for the user-data volume
+  StorageMonitor_GetHealth = 'storage-monitor:get-health',
+  StorageMonitor_HealthChanged = 'storage-monitor:health-changed',
 
   Notification_Send = 'notification:send',
   Notification_OnClick = 'notification:on-click',
@@ -71,7 +67,7 @@ export enum IpcChannel {
   Mcp_RemoveServer = 'mcp:remove-server',
   Mcp_RestartServer = 'mcp:restart-server',
   Mcp_StopServer = 'mcp:stop-server',
-  Mcp_ListTools = 'mcp:list-tools',
+  Mcp_RefreshTools = 'mcp:refresh-tools',
   Mcp_CallTool = 'mcp:call-tool',
   Mcp_ListPrompts = 'mcp:list-prompts',
   Mcp_GetPrompt = 'mcp:get-prompt',
@@ -82,8 +78,8 @@ export enum IpcChannel {
   Mcp_ServersUpdated = 'mcp:servers-updated',
   Mcp_CheckConnectivity = 'mcp:check-connectivity',
   Mcp_UploadDxt = 'mcp:upload-dxt',
+  Mcp_UploadMcpb = 'mcp:upload-mcpb',
   Mcp_AbortTool = 'mcp:abort-tool',
-  Mcp_ResolveHubTool = 'mcp:resolve-hub-tool',
   Mcp_GetServerVersion = 'mcp:get-server-version',
   Mcp_Progress = 'mcp:progress',
   Mcp_GetServerLogs = 'mcp:get-server-logs',
@@ -92,21 +88,6 @@ export enum IpcChannel {
   Python_Execute = 'python:execute',
   Python_ExecutionRequest = 'python:execution-request',
   Python_ExecutionResponse = 'python:execution-response',
-
-  // agent messages
-  AgentMessage_PersistExchange = 'agent-message:persist-exchange',
-  AgentMessage_GetHistory = 'agent-message:get-history',
-
-  AgentToolPermission_Request = 'agent-tool-permission:request',
-  AgentToolPermission_Response = 'agent-tool-permission:response',
-  AgentToolPermission_Result = 'agent-tool-permission:result',
-
-  // Agent session stream (IM channel -> renderer real-time)
-  AgentSessionStream_Subscribe = 'agent-session-stream:subscribe',
-  AgentSessionStream_Unsubscribe = 'agent-session-stream:unsubscribe',
-  AgentSessionStream_Abort = 'agent-session-stream:abort',
-  AgentSessionStream_Chunk = 'agent-session-stream:chunk',
-  AgentSession_Changed = 'agent-session:changed',
 
   // WeChat channel
   WeChat_QrLogin = 'wechat:qr-login',
@@ -171,32 +152,16 @@ export enum IpcChannel {
 
   Shortcut_RegistrationConflict = 'shortcut:registration-conflict',
 
+  NativeCommandPopupMenu_Show = 'native-command-popup-menu:show',
+
   // Tab
   Tab_Attach = 'tab:attach',
   Tab_Detach = 'tab:detach',
   Tab_MoveWindow = 'tab:move-window',
-  Tab_TryAttach = 'tab:try-attach',
   Tab_DragEnd = 'tab:drag-end',
 
-  KnowledgeBase_Create = 'knowledge-base:create',
-  KnowledgeBase_Reset = 'knowledge-base:reset',
-  KnowledgeBase_Delete = 'knowledge-base:delete',
-  KnowledgeBase_Add = 'knowledge-base:add',
-  KnowledgeBase_Remove = 'knowledge-base:remove',
-  KnowledgeBase_Search = 'knowledge-base:search',
-  KnowledgeBase_Rerank = 'knowledge-base:rerank',
-  KnowledgeRuntime_CreateBase = 'knowledge-runtime:create-base',
-  KnowledgeRuntime_RestoreBase = 'knowledge-runtime:restore-base',
-  KnowledgeRuntime_DeleteBase = 'knowledge-runtime:delete-base',
-  KnowledgeRuntime_AddItems = 'knowledge-runtime:add-items',
-  KnowledgeRuntime_DeleteItems = 'knowledge-runtime:delete-items',
-  KnowledgeRuntime_ReindexItems = 'knowledge-runtime:reindex-items',
-  KnowledgeRuntime_Search = 'knowledge-runtime:search',
-  KnowledgeRuntime_ListItemChunks = 'knowledge-runtime:list-item-chunks',
-  KnowledgeRuntime_DeleteItemChunk = 'knowledge-runtime:delete-item-chunk',
-
-  FileProcessing_StartJob = 'file-processing:start-job',
-  FileProcessing_ListAvailableProcessors = 'file-processing:list-available-processors',
+  // Sub-window (detached tab window)
+  SubWindow_SetAlwaysOnTop = 'sub-window:set-always-on-top',
 
   //file
   File_Open = 'file:open',
@@ -235,14 +200,12 @@ export enum IpcChannel {
   File_OpenWithRelativePath = 'file:openWithRelativePath',
   File_IsTextFile = 'file:isTextFile',
   File_IsDirectory = 'file:isDirectory',
+  File_GetMetadata = 'file:getMetadata',
   File_ListDirectory = 'file:listDirectory',
   File_CheckFileName = 'file:checkFileName',
   File_ValidateNotesDirectory = 'file:validateNotesDirectory',
   File_BatchUploadMarkdown = 'file:batchUploadMarkdown',
   File_ShowInFolder = 'file:showInFolder',
-  // FileManager v2 surface (Phase 1b.3)
-  File_GetDanglingState = 'file:getDanglingState',
-  File_BatchGetDanglingStates = 'file:batchGetDanglingStates',
   // FileManager v2 surface (Phase 2)
   File_CreateInternalEntry = 'file:createInternalEntry',
   File_EnsureExternalEntry = 'file:ensureExternalEntry',
@@ -258,12 +221,6 @@ export enum IpcChannel {
 
   // PDF
   Pdf_ExtractText = 'pdf:extractText',
-
-  // file service
-  FileService_Upload = 'file-service:upload',
-  FileService_List = 'file-service:list',
-  FileService_Delete = 'file-service:delete',
-  FileService_Retrieve = 'file-service:retrieve',
 
   Export_Word = 'export:word',
 
@@ -310,10 +267,7 @@ export enum IpcChannel {
   System_GetDeviceType = 'system:getDeviceType',
   System_GetHostname = 'system:getHostname',
   System_GetCpuName = 'system:getCpuName',
-  System_CheckGitBash = 'system:checkGitBash',
-  System_GetGitBashPath = 'system:getGitBashPath',
-  System_GetGitBashPathInfo = 'system:getGitBashPathInfo',
-  System_SetGitBashPath = 'system:setGitBashPath',
+  // Git Bash has no IPC channel; resolved in-process (settingsBuilder).
 
   // DevTools
   System_ToggleDevTools = 'system:toggleDevTools',
@@ -340,20 +294,6 @@ export enum IpcChannel {
   // Provider
   Provider_AddKey = 'provider:add-key',
 
-  // Web Search
-  WebSearch_SearchKeywords = 'web-search:search-keywords',
-  WebSearch_FetchUrls = 'web-search:fetch-urls',
-
-  //Selection Assistant
-  Selection_TextSelected = 'selection:text-selected',
-  Selection_ToolbarHide = 'selection:toolbar-hide',
-  Selection_ToolbarVisibilityChange = 'selection:toolbar-visibility-change',
-  Selection_ToolbarDetermineSize = 'selection:toolbar-determine-size',
-  Selection_WriteToClipboard = 'selection:write-to-clipboard',
-  Selection_ActionWindowPin = 'selection:action-window-pin',
-  Selection_ProcessAction = 'selection:process-action',
-  Selection_GetLinuxEnvInfo = 'selection:get-linux-env-info',
-
   // Data: Preference
   Preference_Get = 'preference:get',
   Preference_Set = 'preference:set',
@@ -374,29 +314,23 @@ export enum IpcChannel {
   DataApi_Unsubscribe = 'data-api:unsubscribe',
   DataApi_Stream = 'data-api:stream',
 
-  // TRACE
-  TRACE_SAVE_DATA = 'trace:saveData',
-  TRACE_GET_DATA = 'trace:getData',
-  TRACE_SAVE_ENTITY = 'trace:saveEntity',
-  TRACE_GET_ENTITY = 'trace:getEntity',
-  TRACE_BIND_TOPIC = 'trace:bindTopic',
-  TRACE_CLEAN_TOPIC = 'trace:cleanTopic',
-  TRACE_TOKEN_USAGE = 'trace:tokenUsage',
-  TRACE_CLEAN_HISTORY = 'trace:cleanHistory',
-  TRACE_OPEN_WINDOW = 'trace:openWindow',
-  TRACE_SET_TITLE = 'trace:setTitle',
-  TRACE_ADD_END_MESSAGE = 'trace:addEndMessage',
-  TRACE_CLEAN_LOCAL_DATA = 'trace:cleanLocalData',
-  TRACE_ADD_STREAM_MESSAGE = 'trace:addStreamMessage',
+  // IpcApi: RPC-over-IPC command channel (renderer→main request, main→renderer event)
+  IpcApi_Request = 'ipc-api:request',
+  IpcApi_Event = 'ipc-api:event',
 
-  // API Server
-  ApiServer_Start = 'api-server:start',
-  ApiServer_Stop = 'api-server:stop',
-  ApiServer_Restart = 'api-server:restart',
-  ApiServer_GetStatus = 'api-server:get-status',
-  ApiServer_Ready = 'api-server:ready',
-  // NOTE: This api is not be used.
-  ApiServer_GetConfig = 'api-server:get-config',
+  // Topic auto-rename push (main → renderer; payload: { topicId })
+  Topic_AutoRenamed = 'topic:auto-renamed',
+  // Agent session auto-rename push (main → renderer; payload: { sessionId })
+  AgentSession_AutoRenamed = 'agent-session:auto-renamed',
+
+  // TRACE
+  TRACE_GET_DATA = 'trace:getData',
+  TRACE_CLEAN_LOCAL_DATA = 'trace:cleanLocalData',
+
+  // API Gateway
+  ApiGateway_Start = 'api-gateway:start',
+  ApiGateway_Stop = 'api-gateway:stop',
+  ApiGateway_Restart = 'api-gateway:restart',
 
   // ExternalApps
   ExternalApps_DetectInstalled = 'external-apps:detect-installed',
@@ -407,10 +341,6 @@ export enum IpcChannel {
   CodeCli_SetCustomTerminalPath = 'code-cli:set-custom-terminal-path',
   CodeCli_GetCustomTerminalPath = 'code-cli:get-custom-terminal-path',
   CodeCli_RemoveCustomTerminalPath = 'code-cli:remove-custom-terminal-path',
-
-  // OCR
-  OCR_ocr = 'ocr:ocr',
-  OCR_ListProviders = 'ocr:list-providers',
 
   // OVMS
   Ovms_IsSupported = 'ovms:is-supported',
@@ -465,29 +395,15 @@ export enum IpcChannel {
   // Analytics
   Analytics_TrackTokenUsage = 'analytics:track-token-usage',
 
-  // WindowManager
-  SettingsWindow_Open = 'settings-window:open',
-  WindowManager_Open = 'window-manager:open',
-  WindowManager_Close = 'window-manager:close',
-  WindowManager_Minimize = 'window-manager:minimize',
-  WindowManager_Maximize = 'window-manager:maximize',
-  WindowManager_Unmaximize = 'window-manager:unmaximize',
-  WindowManager_SetFullScreen = 'window-manager:set-full-screen',
-  WindowManager_IsMaximized = 'window-manager:is-maximized',
-  WindowManager_IsFullScreen = 'window-manager:is-full-screen',
-  WindowManager_GetInitData = 'window-manager:get-init-data',
-  // All three below are sent only to the originating window's webContents.
-  // macOS unreliable for maximize/unmaximize (electron#3325, #28699) — use FullscreenChanged on macOS.
-  WindowManager_MaximizedChanged = 'window-manager:maximized-changed',
-  // OS-level only; does NOT cover HTML5 element.requestFullscreen() or macOS setSimpleFullScreen.
-  WindowManager_FullscreenChanged = 'window-manager:fullscreen-changed',
-  // Payload = the initData passed to open(); omitted if none supplied, not fired on fresh creation.
-  WindowManager_Reused = 'window-manager:reused',
+  // AI capability IPC (model ops, streaming chat, agent-session warm-up, tool approval,
+  // agent run-task) migrated to IpcApi (`ai.*`). Only `translate.open` remains on legacy IPC.
+  Ai_Translate_Open = 'ai:translate:open',
 
-  // Agent operations
-  Agent_RunTask = 'agent:run-task',
-  Agent_GetModels = 'agent:get-models',
-  Agent_ListTools = 'agent:list-tools'
+  // Settings window — legacy "open a named window" channel (preload `settings.openSettings`).
+  // The former WindowManager_* control + event channels were migrated to IpcApi (`window.*`).
+  SettingsWindow_Open = 'settings-window:open'
+
+  // BinaryManager (tool manager) was migrated to IpcApi (`binary.*`).
 
   // ──────────────────────────────────────────────────────────────
   // TODO(v2): the following IPC channels are still referenced via

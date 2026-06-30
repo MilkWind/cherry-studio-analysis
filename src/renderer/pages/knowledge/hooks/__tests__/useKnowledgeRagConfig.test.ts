@@ -1,23 +1,22 @@
 import type { KnowledgeBase } from '@shared/data/types/knowledge'
-import { MODEL_CAPABILITY } from '@shared/data/types/model'
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useKnowledgeRagConfig } from '../useKnowledgeRagConfig'
 
-const mockUseModels = vi.fn()
 const mockUseMutation = vi.fn()
 const mockTrigger = vi.fn()
+const mockUsePreference = vi.fn()
 const mockLogger = vi.hoisted(() => ({
   error: vi.fn()
 }))
 
-vi.mock('@renderer/hooks/useModels', () => ({
-  useModels: (...args: unknown[]) => mockUseModels(...args)
-}))
-
 vi.mock('@data/hooks/useDataApi', () => ({
   useMutation: (...args: unknown[]) => mockUseMutation(...args)
+}))
+
+vi.mock('@data/hooks/usePreference', () => ({
+  usePreference: (...args: unknown[]) => mockUsePreference(...args)
 }))
 
 vi.mock('@logger', () => ({
@@ -29,7 +28,7 @@ vi.mock('@logger', () => ({
 }))
 
 vi.mock('@renderer/i18n/label', () => ({
-  getFileProcessorLabel: (id: string) =>
+  getFileProcessorLabelKey: (id: string) =>
     (
       ({
         paddleocr: 'PaddleOCR',
@@ -47,7 +46,7 @@ vi.mock('react-i18next', () => ({
       (
         ({
           'knowledge.rag.search_mode.hybrid': '混合检索（推荐）',
-          'knowledge.rag.search_mode.default': '向量检索',
+          'knowledge.rag.search_mode.vector': '向量检索',
           'knowledge.rag.search_mode.bm25': '全文检索'
         }) as Record<string, string>
       )[key] ?? key
@@ -64,12 +63,13 @@ const createKnowledgeBase = (overrides: Partial<KnowledgeBase> = {}): KnowledgeB
   fileProcessorId: undefined,
   chunkSize: 1024,
   chunkOverlap: 200,
+  chunkStrategy: 'structured',
+  chunkSeparator: '\\n\\n',
   threshold: 0,
   documentCount: 6,
   status: 'completed',
   error: null,
   searchMode: 'hybrid',
-  hybridAlpha: 0.6,
   createdAt: '2026-04-15T09:00:00+08:00',
   updatedAt: '2026-04-15T09:00:00+08:00',
   ...overrides
@@ -78,84 +78,45 @@ const createKnowledgeBase = (overrides: Partial<KnowledgeBase> = {}): KnowledgeB
 describe('useKnowledgeRagConfig', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockUseModels.mockImplementation((query?: { capability?: string; enabled?: boolean }) => {
-      if (query?.capability === MODEL_CAPABILITY.EMBEDDING) {
-        return {
-          models: [
-            {
-              id: 'openai::text-embedding-3-small',
-              providerId: 'openai',
-              name: 'text-embedding-3-small',
-              capabilities: [MODEL_CAPABILITY.EMBEDDING],
-              supportsStreaming: false,
-              isEnabled: true,
-              isHidden: false
-            }
-          ]
-        }
-      }
-
-      if (query?.capability === MODEL_CAPABILITY.RERANK) {
-        return {
-          models: [
-            {
-              id: 'jina::jina-reranker-v2-base-multilingual',
-              providerId: 'jina',
-              name: 'jina-reranker-v2-base-multilingual',
-              capabilities: [MODEL_CAPABILITY.RERANK],
-              supportsStreaming: false,
-              isEnabled: true,
-              isHidden: false
-            }
-          ]
-        }
-      }
-
-      return { models: [] }
-    })
     mockUseMutation.mockReturnValue({
       trigger: mockTrigger,
       isLoading: false,
       error: undefined
     })
+    mockUsePreference.mockReturnValue([
+      {
+        paddleocr: {
+          apiKeys: ['paddle-key']
+        },
+        mineru: {
+          apiKeys: []
+        },
+        mistral: {
+          apiKeys: ['   ']
+        }
+      }
+    ])
   })
 
-  it('builds options from shared data and translations and exposes the save mutation', async () => {
+  it('builds options from configured document processors and exposes the save mutation', async () => {
     const base = createKnowledgeBase({
-      fileProcessorId: 'doc2x',
+      fileProcessorId: 'paddleocr',
       rerankModelId: 'jina::jina-reranker-v2-base-multilingual'
     })
     const { result } = renderHook(() => useKnowledgeRagConfig(base))
 
-    expect(result.current.fileProcessorOptions).toEqual([
-      { value: 'paddleocr', label: 'PaddleOCR' },
-      { value: 'mineru', label: 'MinerU' },
-      { value: 'doc2x', label: 'Doc2X' },
-      { value: 'mistral', label: 'Mistral' },
-      { value: 'open-mineru', label: 'Open MinerU' }
-    ])
-    expect(result.current.embeddingModelOptions).toEqual([
-      {
-        value: 'openai::text-embedding-3-small',
-        label: 'text-embedding-3-small · openai'
-      }
-    ])
-    expect(result.current.rerankModelOptions).toEqual([
-      {
-        value: 'jina::jina-reranker-v2-base-multilingual',
-        label: 'jina-reranker-v2-base-multilingual · jina'
-      }
-    ])
+    expect(result.current.fileProcessorOptions).toEqual([{ value: 'paddleocr', label: 'PaddleOCR' }])
     expect(result.current.searchModeOptions).toEqual([
       { value: 'hybrid', label: '混合检索（推荐）' },
-      { value: 'default', label: '向量检索' },
+      { value: 'vector', label: '向量检索' },
       { value: 'bm25', label: '全文检索' }
     ])
+    expect(result.current.fileProcessorOptions.map((option) => option.value)).not.toContain('mineru')
+    expect(result.current.fileProcessorOptions.map((option) => option.value)).not.toContain('doc2x')
+    expect(result.current.fileProcessorOptions.map((option) => option.value)).not.toContain('mistral')
     expect(result.current.fileProcessorOptions.map((option) => option.value)).not.toContain('tesseract')
     expect(result.current.fileProcessorOptions.map((option) => option.value)).not.toContain('system')
     expect(result.current.fileProcessorOptions.map((option) => option.value)).not.toContain('ovocr')
-    expect(mockUseModels).toHaveBeenCalledWith({ capability: MODEL_CAPABILITY.EMBEDDING, enabled: true })
-    expect(mockUseModels).toHaveBeenCalledWith({ capability: MODEL_CAPABILITY.RERANK, enabled: true })
     expect(mockUseMutation).toHaveBeenCalledWith('PATCH', '/knowledge-bases/:id', {
       refresh: ['/knowledge-bases']
     })
@@ -165,13 +126,14 @@ describe('useKnowledgeRagConfig', () => {
         fileProcessorId: null,
         chunkSize: '1536',
         chunkOverlap: '256',
+        chunkStrategy: 'structured',
+        chunkSeparator: '\\n\\n',
         embeddingModelId: 'voyage::voyage-3-large',
         rerankModelId: null,
-        dimensions: '4096',
         documentCount: 10,
         threshold: 0.25,
-        searchMode: 'default',
-        hybridAlpha: 0.6
+        searchMode: 'vector',
+        hybridAlpha: null
       })
     })
 
@@ -184,18 +146,9 @@ describe('useKnowledgeRagConfig', () => {
         rerankModelId: null,
         documentCount: 10,
         threshold: 0.25,
-        searchMode: 'default'
+        searchMode: 'vector'
       }
     })
-  })
-
-  it('returns empty model options when no enabled runtime models are available', () => {
-    mockUseModels.mockReturnValue({ models: [] })
-
-    const { result } = renderHook(() => useKnowledgeRagConfig(createKnowledgeBase()))
-
-    expect(result.current.embeddingModelOptions).toEqual([])
-    expect(result.current.rerankModelOptions).toEqual([])
   })
 
   it('propagates save failures to the caller', async () => {
@@ -210,20 +163,20 @@ describe('useKnowledgeRagConfig', () => {
     })
   })
 
-  it('omits hybridAlpha when switching away from hybrid search', async () => {
+  it('builds a patch with only the changed search mode', async () => {
     const { result } = renderHook(() => useKnowledgeRagConfig(createKnowledgeBase()))
 
     await act(async () => {
       await result.current.save({
         ...result.current.initialValues,
-        searchMode: 'default'
+        searchMode: 'vector'
       })
     })
 
     expect(mockTrigger).toHaveBeenCalledWith({
       params: { id: 'base-1' },
       body: {
-        searchMode: 'default'
+        searchMode: 'vector'
       }
     })
   })

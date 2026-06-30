@@ -15,7 +15,7 @@ const logger = loggerService.withContext('SkillAdapter')
  *
  * No `agentId` is passed by the resource library: it reads the global skill
  * library, so `isEnabled` is always `false` there. Per-agent enablement state
- * belongs to the agent editor's Skills tab (`useInstalledSkills(agentId)`).
+ * belongs to the agent edit dialog's Skills tab (`useInstalledSkills(agentId)`).
  *
  * `search` is forwarded to `GET /skills` and evaluated server-side.
  */
@@ -58,65 +58,9 @@ function unwrapSkillResult<T>(
 }
 
 /**
- * List-level write hook for skills. All three install paths supported by the
- * service are exposed here so the library page can mirror Settings → Skills:
- *
- * - `install({ installSource })`: marketplace handles
- *   (`claude-plugins:owner/repo/path` / `skills.sh:owner/repo[/skill]` /
- *   `clawhub:slug`).
- * - `installFromZip(zipFilePath)`: local ZIP archive.
- * - `installFromDirectory(directoryPath)`: local directory.
- *
- * Each path invalidates `/skills` on success so the list grid picks the new
- * row up immediately without an explicit refetch.
- */
-export function useSkillMutations() {
-  const invalidate = useInvalidateCache()
-  const refresh = useCallback(async () => {
-    try {
-      await invalidate('/skills')
-    } catch (error) {
-      logger.warn('Failed to refresh skills cache after IPC mutation', { error })
-    }
-  }, [invalidate])
-
-  const install = useCallback(
-    async (installSource: string): Promise<InstalledSkill> => {
-      const result = await window.api.skill.install({ installSource })
-      const skill = unwrapSkillResult(result, 'Failed to install skill')
-      await refresh()
-      return skill
-    },
-    [refresh]
-  )
-
-  const installFromZip = useCallback(
-    async (zipFilePath: string): Promise<InstalledSkill> => {
-      const result = await window.api.skill.installFromZip({ zipFilePath })
-      const skill = unwrapSkillResult(result, 'Failed to install skill from ZIP')
-      await refresh()
-      return skill
-    },
-    [refresh]
-  )
-
-  const installFromDirectory = useCallback(
-    async (directoryPath: string): Promise<InstalledSkill> => {
-      const result = await window.api.skill.installFromDirectory({ directoryPath })
-      const skill = unwrapSkillResult(result, 'Failed to install skill from directory')
-      await refresh()
-      return skill
-    },
-    [refresh]
-  )
-
-  return { install, installFromZip, installFromDirectory }
-}
-
-/**
  * Per-skill mutation hook. Only uninstall lives here today — toggle is
  * agent-scoped and stays with `useInstalledSkills(agentId)` in the agent
- * editor, since the library list view has no agent context.
+ * dialog, since the library list view has no agent context.
  */
 export function useSkillMutationsById(id: string) {
   const invalidate = useInvalidateCache()

@@ -29,9 +29,9 @@
  *    - Old: `askId` links responses to user message, `foldSelected` marks active
  *    - New: Shared `parentId` + non-zero `siblingsGroupId` groups siblings
  *
- * 3. **Block Inlining**
+ * 3. **Block → Parts**
  *    - Old: `message.blocks: string[]` (IDs) + separate `message_blocks` table
- *    - New: `message.data.blocks: MessageDataBlock[]` (inline JSON)
+ *    - New: `message.data.parts` (AI SDK UIMessage parts, inline JSON)
  *
  * 4. **Citation Migration**
  *    - Old: Separate `CitationMessageBlock`
@@ -44,8 +44,9 @@
  * ## `chat_message` `file_ref` backfill
  *
  * v1 image/file blocks reference v1 files via `block.file.id`. Those ids
- * survive into v2 as `ImageBlock.fileId` / `FileBlock.fileId` (inline JSON
- * on `messageTable.data.blocks`). This migrator also creates `file_ref` rows
+ * survive into v2 as `FileUIPart.providerMetadata.cherry.fileEntryId` (inline
+ * JSON on `messageTable.data.parts`), populated by ChatMappings during the
+ * image/file mapping. This migrator also creates `file_ref` rows
  * (`sourceType='chat_message'`, `sourceId=messageId`, `role='attachment'`)
  * for each distinct (message, fileId) pair referencing an existing `file_entry`.
  * Dangling refs (fileId not in `file_entry`) are skipped with warnings.
@@ -68,6 +69,8 @@ import { userModelTable } from '@data/db/schemas/userModel'
 import { loggerService } from '@logger'
 import type { ExecuteResult, PrepareResult, ValidateResult, ValidationError } from '@shared/data/migration/v2/types'
 import { chatMessageSourceType } from '@shared/data/types/file/ref/chatMessage'
+import type { CherryMessagePart } from '@shared/data/types/message'
+import { readCherryMeta } from '@shared/data/types/uiParts'
 import { eq, inArray, sql } from 'drizzle-orm'
 import { v4 as uuidv4 } from 'uuid'
 
@@ -77,6 +80,7 @@ import { BaseMigrator } from './BaseMigrator'
 import {
   buildBlockLookup,
   buildMessageTree,
+  type ChatMappingDeps,
   findActiveNodeId,
   type NewMessage,
   type NewTopic,
@@ -107,6 +111,43 @@ const MESSAGE_INSERT_BATCH_SIZE = 100
 const FILE_REF_INSERT_BATCH_SIZE = 100
 const SKIP_WARNING_SAMPLE_LIMIT = 10
 const INARRAY_CHUNK = 500
+
+/**
+ * Yield each FileEntryId referenced by file parts in a message's parts array.
+ * v1→v2 ChatMappings stashes `block.file.id` into `providerMetadata.cherry.fileEntryId`
+ * during the image/file mapping; external (user-path) files have no fileEntryId.
+ */
+function* extractFileEntryIds(parts: CherryMessagePart[] | undefined): Iterable<string> {
+  if (!parts) return
+  for (const part of parts) {
+    if (part.type !== 'file') continue
+    const fileId = readCherryMeta(part)?.fileEntryId
+    if (fileId) yield fileId
+  }
+}
+
+/**
+ * Build a topic's content-less virtual root row (`role = 'root'`, `parentId = null`).
+ * Mirrors `MessageService.createRootMessageTx` so migrated topics match freshly created
+ * ones. `createdAt` is the topic's creation time so the root sorts before its children.
+ */
+function buildVirtualRoot(id: string, topicId: string, createdAt: number): NewMessage {
+  return {
+    id,
+    parentId: null,
+    topicId,
+    role: 'root',
+    data: { parts: [] },
+    searchableText: '',
+    status: 'success',
+    siblingsGroupId: 0,
+    modelId: null,
+    modelSnapshot: null,
+    stats: null,
+    createdAt,
+    updatedAt: createdAt
+  }
+}
 
 /**
  * Assistant data from Redux for assistant lookup. Both `assistants[]` and the
@@ -377,6 +418,13 @@ export class ChatMigrator extends BaseMigrator {
         ? new Set((await ctx.db.select({ id: userModelTable.id }).from(userModelTable)).map((row) => row.id))
         : null
 
+      // ChatMappings promotes any v1 inline base64 (block.url=data: or
+      // legacy metadata.generateImageResponse.images) into v2 file_entry
+      // rows during transformMessage — written through the migration's
+      // own DB handle, *not* through `application.get('FileManager')`:
+      // migration runs in preboot, before any `WhenReady` service is up.
+      const mappingDeps: ChatMappingDeps = { db: ctx.db, filesDataDir: ctx.paths.filesDataDir }
+
       // Buffer all topics first; orderKey is stamped post-stream because per-batch
       // keys would collide across batches sharing a `groupId` partition.
       await topicReader.readInBatches<OldTopic>(TOPIC_BATCH_SIZE, async (topics, batchIndex) => {
@@ -384,7 +432,7 @@ export class ChatMigrator extends BaseMigrator {
 
         for (const oldTopic of topics) {
           try {
-            const prepared = this.prepareTopicData(oldTopic)
+            const prepared = await this.prepareTopicData(oldTopic, mappingDeps)
             if (prepared) {
               this.stagedTopics.push(prepared)
             } else {
@@ -579,7 +627,9 @@ export class ChatMigrator extends BaseMigrator {
         }
       }
 
-      // Check for multi-root topics (topics with more than one root message)
+      // Invariant check: each topic must have exactly one virtual root (parentId IS NULL).
+      // The migrator inserts one per topic and reparents former physical roots onto it,
+      // so >1 here means a bug (the message_topic_root_uniq index would also reject it).
       const multiRootCheck = await db
         .select({ count: sql<number>`count(*)` })
         .from(sql`(SELECT topic_id FROM ${messageTable} WHERE parent_id IS NULL GROUP BY topic_id HAVING count(*) > 1)`)
@@ -655,12 +705,8 @@ export class ChatMigrator extends BaseMigrator {
     const referencedFileIds = new Set<string>()
     for (const data of this.stagedTopics) {
       for (const msg of data.messages) {
-        if (!msg.data?.blocks) continue
-        for (const block of msg.data.blocks) {
-          const fileId = (block as { fileId?: string }).fileId
-          if (fileId && (block.type === 'image' || block.type === 'file')) {
-            referencedFileIds.add(fileId)
-          }
+        for (const fileId of extractFileEntryIds(msg.data?.parts)) {
+          referencedFileIds.add(fileId)
         }
       }
     }
@@ -690,12 +736,8 @@ export class ChatMigrator extends BaseMigrator {
   private collectFileRefRows(batchMessages: NewMessage[], now: number): Array<typeof fileRefTable.$inferInsert> {
     const rows: Array<typeof fileRefTable.$inferInsert> = []
     for (const msg of batchMessages) {
-      if (!msg.data?.blocks) continue
       const dedupKey = new Set<string>()
-      for (const block of msg.data.blocks) {
-        if (block.type !== 'image' && block.type !== 'file') continue
-        const fileId = (block as { fileId?: string }).fileId
-        if (!fileId) continue
+      for (const fileId of extractFileEntryIds(msg.data?.parts)) {
         if (!this.migratedFileEntryIds.has(fileId)) {
           this.recordSkippedWarning(
             'chat_message_dangling_file_entry',
@@ -725,7 +767,7 @@ export class ChatMigrator extends BaseMigrator {
    * source layout (Dexie topic rows + Redux topic metadata + defaultAssistant slot)
    * and the merge contract.
    */
-  private prepareTopicData(oldTopic: OldTopic): PreparedTopicData | null {
+  private async prepareTopicData(oldTopic: OldTopic, deps?: ChatMappingDeps): Promise<PreparedTopicData | null> {
     // Validate required fields
     if (!oldTopic.id) {
       logger.error('Topic missing id, skipping', new Error('missing topic id'), {
@@ -891,12 +933,13 @@ export class ChatMigrator extends BaseMigrator {
         // Resolve parentId through any skipped messages
         const resolvedParentId = resolveParentId(treeInfo.parentId)
 
-        const newMsg = transformMessage(
+        const newMsg = await transformMessage(
           oldMsg,
           resolvedParentId, // Use resolved parent instead of original
           treeInfo.siblingsGroupId,
           blocks,
-          oldTopic.id
+          oldTopic.id,
+          deps
         )
 
         newMessages.push(newMsg)
@@ -1002,7 +1045,18 @@ export class ChatMigrator extends BaseMigrator {
       const idRemap = new Map<string, string>()
       const batchIds = new Set<string>()
       for (const data of batch) {
+        // Bring migrated topics into the virtual-root model: every topic gets one
+        // content-less `role = 'root'` row (parentId = null), and the former physical
+        // roots (parentId = null content messages) are reparented onto it. This makes
+        // the single-root invariant and `role = 'root'` ⇔ `parentId IS NULL` hold for
+        // migrated data exactly as for freshly created topics. Mirrors
+        // MessageService.createRootMessageTx.
+        const rootId = uuidv4()
+        batchMessages.push(buildVirtualRoot(rootId, data.topic.id, data.topic.createdAt))
         for (const msg of data.messages) {
+          if (msg.parentId === null) {
+            msg.parentId = rootId
+          }
           if (seenMessageIds.has(msg.id) || batchIds.has(msg.id)) {
             const newId = uuidv4()
             logger.warn(`Duplicate message ID found: ${msg.id}, assigning new ID: ${newId}`)

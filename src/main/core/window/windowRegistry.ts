@@ -1,6 +1,6 @@
 import { isDev, isLinux, isMac, isWin } from '@main/core/platform'
 import { type WindowOptions, WindowType, type WindowTypeMetadata } from '@main/core/window/types'
-import { MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH } from '@shared/config/constant'
+import { MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH } from '@shared/utils/window'
 
 /**
  * Default window configuration.
@@ -35,10 +35,11 @@ export const DEFAULT_WINDOW_CONFIG: WindowOptions = {
  */
 export const WINDOW_TYPE_REGISTRY: Partial<Record<WindowType, WindowTypeMetadata>> = {
   // Main application window — singleton primary surface.
-  // Managed by MainWindowService: dynamic options (window-state position/size, theme-driven
-  // backgroundColor / backgroundMaterial / frame / icon / zoomFactor) are
-  // injected via wm.open({ options }). showMode 'manual' lets MainWindowService decide first
-  // show in the ready-to-show handler (so tray-on-launch can suppress it).
+  // Managed by MainWindowService: dynamic options (theme-driven backgroundColor /
+  // backgroundMaterial / frame / icon / zoomFactor) are injected via wm.open({ options }).
+  // Window position/size/maximized are restored by WindowManager via `rememberBounds`
+  // (no longer injected by the service). showMode 'manual' lets MainWindowService decide
+  // first show in the ready-to-show handler (so tray-on-launch can suppress it).
   //
   // Intentionally NOT using `singletonConfig` here — MainWindowService's close handler
   // (see `setupWindowLifecycleEvents`) reads tray preferences at runtime, calls
@@ -54,6 +55,8 @@ export const WINDOW_TYPE_REGISTRY: Partial<Record<WindowType, WindowTypeMetadata
     htmlPath: 'windows/main/index.html',
     // preload omitted → defaults to 'index.js' (full API preload).
     showMode: 'manual',
+    // Persist & restore position/size across launches (maximize re-applied by the service).
+    rememberBounds: true,
     windowOptions: {
       width: MIN_WINDOW_WIDTH,
       height: MIN_WINDOW_HEIGHT,
@@ -141,13 +144,22 @@ export const WINDOW_TYPE_REGISTRY: Partial<Record<WindowType, WindowTypeMetadata
   // ready-to-show auto-show fallback). Init payload (tabId, url, title, type,
   // isPinned) flows via initData and useWindowInitData<SubWindowInitData>() in
   // the renderer.
-  // NOTE on future evolution: if this ever changes to `lifecycle: 'pooled'`,
-  // the Win/Linux content-bounds move path in SubWindowService (electron#27651)
-  // requires `useContentSize: true` here — otherwise resetPooledWindowGeometry's
-  // content-bounds branch is skipped and cached size drifts across reuse.
   [WindowType.SubWindow]: {
     type: WindowType.SubWindow,
-    lifecycle: 'default',
+    lifecycle: 'pooled',
+    poolConfig: {
+      // INVARIANT: this pool is destroy-on-close (standbySize:1 + warmup:'eager', and NO
+      // recycleMaxSize). That is the *only* reason the SubWindow renderer is allowed to be
+      // single-init: SubWindowAppShell opens its tab once (an `initialized` ref guard) and
+      // ignores later WindowManager_Reused events. With no recycleMaxSize, close() always
+      // destroys, so a window is never handed back carrying a *different* tab — every open()
+      // either pops a pristine never-navigated standby or creates fresh. The renderer is NOT
+      // reuse-safe. Do NOT add recycleMaxSize (or otherwise enable recycle) here without first
+      // making the renderer re-initialize on window.reused; otherwise a recycled window would
+      // keep displaying its previous tab.
+      standbySize: 1,
+      warmup: 'eager'
+    },
     htmlPath: 'windows/subWindow/index.html',
     // preload omitted → defaults to 'index.js' (full API preload).
     showMode: 'manual',
@@ -156,8 +168,15 @@ export const WINDOW_TYPE_REGISTRY: Partial<Record<WindowType, WindowTypeMetadata
       height: 600,
       minWidth: 400,
       minHeight: 300,
+      useContentSize: true,
       autoHideMenuBar: true,
       transparent: false,
+      // Load-bearing for SubWindowService.createWindow's show path: that path shows the window
+      // unconditionally + immediately (no ready-to-show wait), relying on the hidden window having
+      // already painted its renderer. This is Electron's default (true) — pinned explicitly so it
+      // is never silently flipped to false (which would re-introduce the empty-shell first-paint
+      // flash on reuse and the never-fires ready-to-show stuck-hidden failure mode).
+      paintWhenInitiallyHidden: true,
       vibrancy: 'sidebar',
       visualEffectState: 'active',
       platformOverrides: {
@@ -198,8 +217,9 @@ export const WINDOW_TYPE_REGISTRY: Partial<Record<WindowType, WindowTypeMetadata
   },
 
   // Quick Assistant window — singleton floating panel.
-  // Managed by QuickAssistantService: stateKeeper bounds are injected via wm.create({ options }),
-  // visibility is driven by showQuickAssistant() (cursor-follow, Windows opacity dance, macOS app.hide).
+  // Managed by QuickAssistantService: visibility is driven by showQuickAssistant()
+  // (cursor-follow, Windows opacity dance, macOS app.hide). Window position/size are
+  // restored by WindowManager via `rememberBounds`.
   [WindowType.QuickAssistant]: {
     type: WindowType.QuickAssistant,
     lifecycle: 'singleton',
@@ -208,6 +228,8 @@ export const WINDOW_TYPE_REGISTRY: Partial<Record<WindowType, WindowTypeMetadata
     // QuickAssistantService.showQuickAssistant controls visibility; showMode: 'manual' also keeps
     // singleton reopen (wm.open) from accidentally re-showing the window before reposition runs.
     showMode: 'manual',
+    // Persist & restore position/size across launches (never maximized — maximizable:false).
+    rememberBounds: true,
     windowOptions: {
       width: 550,
       height: 400,
@@ -390,8 +412,9 @@ export const WINDOW_TYPE_REGISTRY: Partial<Record<WindowType, WindowTypeMetadata
       // visibleOnAllWorkspaces:
       //   - hideOnBlur is driven per-instance by the renderer's `isAutoClose && !isPinned`
       //     logic (see ActionWindow.tsx) — too case-specific for a WM default.
-      //   - alwaysOnTop is toggled at runtime by pinActionWindow via wm.setAlwaysOnTop;
-      //     passing no level lets Electron use its default ('floating' on macOS).
+      //   - alwaysOnTop is toggled at runtime by the `selection.pin_action_window`
+      //     IpcApi handler via wm.behavior.setAlwaysOnTop; passing no level lets
+      //     Electron use its default ('floating' on macOS).
       //   - setVisibleOnAllWorkspaces's true/false options differ per call in the
       //     full-screen show sequence; see SelectionService.showActionWindow.
       macShowInDock: false

@@ -37,6 +37,7 @@ function createTag(id: string, name: string): Tag {
 function createAssistant(overrides: Partial<Assistant> = {}): Assistant {
   return {
     id: 'ast-source',
+    orderKey: 'a0',
     name: '原助手',
     prompt: 'prompt',
     emoji: '💬',
@@ -48,12 +49,9 @@ function createAssistant(overrides: Partial<Assistant> = {}): Assistant {
       enableTopP: false,
       maxTokens: 4096,
       enableMaxTokens: false,
-      contextCount: 5,
       streamOutput: true,
       reasoning_effort: 'default',
-      qwenThinkMode: false,
       mcpMode: 'auto',
-      toolUseMode: 'function',
       maxToolCalls: 20,
       enableMaxToolCalls: true,
       enableWebSearch: false,

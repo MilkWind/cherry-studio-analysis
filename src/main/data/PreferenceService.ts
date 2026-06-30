@@ -22,7 +22,7 @@ import {
 import { IpcChannel } from '@shared/IpcChannel'
 import { and, eq } from 'drizzle-orm'
 import { BrowserWindow } from 'electron'
-import { isEqual } from 'lodash'
+import { isEqual } from 'es-toolkit/compat'
 
 import { preferenceTable } from './db/schemas/preference'
 
@@ -273,8 +273,6 @@ export class PreferenceService extends BaseService {
         this.subscribeForWindow(windowId, keys)
       }
     })
-
-    logger.info('PreferenceService IPC handlers registered')
   }
 
   /**
@@ -376,8 +374,8 @@ export class PreferenceService extends BaseService {
    * ```typescript
    * const preferenceService = application.get('PreferenceService')
    * const { host, port } = preferenceService.getMultiple({
-   *   host: 'feature.csaas.host',
-   *   port: 'feature.csaas.port'
+   *   host: 'feature.api_gateway.host',
+   *   port: 'feature.api_gateway.port'
    * })
    * ```
    */

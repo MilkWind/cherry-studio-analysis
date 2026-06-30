@@ -1,30 +1,30 @@
-import { LoadingOutlined } from '@ant-design/icons'
+import { useChat } from '@ai-sdk/react'
 import { usePreference } from '@data/hooks/usePreference'
 import { loggerService } from '@logger'
+import { MessageContent, MessageContentProvider, toMessageListItem } from '@renderer/components/chat/messages'
+import { useMessageListRenderConfig } from '@renderer/components/chat/messages/hooks/useMessageListRenderConfig'
+import { useMessagePlatformActions } from '@renderer/components/chat/messages/hooks/useMessagePlatformActions'
 import CopyButton from '@renderer/components/CopyButton'
-import { useTopicMessages } from '@renderer/hooks/useMessageOperations'
-import MessageContent from '@renderer/pages/home/Messages/MessageContent'
-import {
-  getAssistantById,
-  getDefaultAssistant,
-  getDefaultModel,
-  getDefaultTopic
-} from '@renderer/services/AssistantService'
-import { pauseTrace } from '@renderer/services/SpanManagerService'
-import type { Assistant, Topic } from '@renderer/types'
-import { AssistantMessageStatus } from '@renderer/types/newMessage'
-import { abortCompletion } from '@renderer/utils/abortController'
+import { useAssistant } from '@renderer/hooks/useAssistant'
+import { useExecutionOverlay } from '@renderer/hooks/useExecutionOverlay'
+import { useTemporaryTopic } from '@renderer/hooks/useTemporaryTopic'
+import { useTopicStreamStatus } from '@renderer/hooks/useTopicStreamStatus'
+import { ipcChatTransport } from '@renderer/services/aiTransport'
+import { getTextFromParts } from '@renderer/utils/message/partsHelpers'
+import { cn } from '@renderer/utils/style'
 import type { SelectionActionItem } from '@shared/data/preference/preferenceTypes'
-import { ChevronDown } from 'lucide-react'
+import type { CherryMessagePart, CherryUIMessage } from '@shared/data/types/message'
+import { ChevronDown, Loader2 } from 'lucide-react'
 import type { FC } from 'react'
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import styled from 'styled-components'
 
-import { processMessages } from './ActionUtils'
 import WindowFooter from './WindowFooter'
 
 const logger = loggerService.withContext('ActionGeneral')
+
+// Stable empty array — temp-topic has no DB-backed uiMessages to seed from.
+const EMPTY_UI_MESSAGES: CherryUIMessage[] = []
 interface Props {
   action: SelectionActionItem
   scrollToBottom?: () => void
@@ -33,37 +33,21 @@ interface Props {
 const ActionGeneral: FC<Props> = React.memo(({ action, scrollToBottom }) => {
   const { t } = useTranslation()
   const [language] = usePreference('app.language')
-  const [error, setError] = useState<string | null>(null)
   const [showOriginal, setShowOriginal] = useState(false)
-  const [status, setStatus] = useState<'preparing' | 'streaming' | 'finished'>('preparing')
-  const [contentToCopy, setContentToCopy] = useState('')
-  const initialized = useRef(false)
+  const { renderConfig } = useMessageListRenderConfig()
+  const platformActions = useMessagePlatformActions()
 
-  // Use useRef for values that shouldn't trigger re-renders
-  const assistantRef = useRef<Assistant | null>(null)
-  const topicRef = useRef<Topic | null>(null)
-  const promptContentRef = useRef('')
-  const askId = useRef('')
+  const { assistant: chosenAssistant } = useAssistant(action.assistantId ?? '')
+  const chosenAssistantId = chosenAssistant?.id
+  const waitingForConfiguredAssistant = Boolean(action.assistantId) && !chosenAssistantId
 
-  // Initialize values only once when action changes
-  useEffect(() => {
-    if (initialized.current) return
-    initialized.current = true
+  // Temporary in-memory topic — never touches SQLite, released on unmount.
+  const { topicId: temporaryTopicId, ready } = useTemporaryTopic({
+    enabled: !waitingForConfiguredAssistant,
+    assistantId: chosenAssistantId
+  })
 
-    // Initialize assistant
-    const currentAssistant = action.assistantId
-      ? getAssistantById(action.assistantId) || getDefaultAssistant()
-      : getDefaultAssistant()
-
-    assistantRef.current = {
-      ...currentAssistant,
-      model: currentAssistant.model || getDefaultModel()
-    }
-
-    // Initialize topic
-    topicRef.current = getDefaultTopic(currentAssistant.id)
-
-    // Initialize prompt content
+  const promptContent = useMemo(() => {
     let userContent = ''
     switch (action.id) {
       case 'summary':
@@ -88,209 +72,140 @@ const ActionGeneral: FC<Props> = React.memo(({ action, scrollToBottom }) => {
 
         userContent = action.prompt + '\n\n' + action.selectedText
     }
-    promptContentRef.current = userContent
+    return userContent
   }, [action, language, t])
 
-  const fetchResult = useCallback(() => {
-    if (!initialized.current) {
-      return
-    }
-    setStatus('preparing')
+  const [isPreparing, setIsPreparing] = useState(false)
+  const [completionError, setCompletionError] = useState<string | null>(null)
 
-    const setAskId = (id: string) => {
-      askId.current = id
+  const { sendMessage, stop: stopChat } = useChat<CherryUIMessage>({
+    // Once the temporary topic id arrives, the chat reinitializes with it.
+    // Before that we use a stable placeholder so `useChat` doesn't thrash across renders.
+    id: temporaryTopicId ?? 'pending-temp',
+    transport: ipcChatTransport,
+    experimental_throttle: 50,
+    onError: (err) => {
+      setIsPreparing(false)
+      setCompletionError(err.message)
     }
-    const onStream = () => {
-      setStatus('streaming')
+  })
+
+  // Temp-topic: no pre-allocated DB row, so the reader keys overlay by the
+  // start-chunk id; `liveAssistants` is the streamed snapshot list.
+  const { activeExecutions, isPending } = useTopicStreamStatus(temporaryTopicId ?? 'pending-temp')
+  const { liveAssistants } = useExecutionOverlay(
+    temporaryTopicId ?? 'pending-temp',
+    activeExecutions,
+    EMPTY_UI_MESSAGES
+  )
+
+  useEffect(() => {
+    if (isPending) {
+      setIsPreparing(false)
       scrollToBottom?.()
     }
-    const onFinish = (content: string) => {
-      setStatus('finished')
-      setContentToCopy(content)
-    }
-    const onError = (error: Error) => {
-      setStatus('finished')
-      setError(error.message)
-    }
+  }, [isPending, scrollToBottom])
 
-    if (!assistantRef.current || !topicRef.current) return
-    logger.debug('Before peocess message', { assistant: assistantRef.current })
-    void processMessages(
-      assistantRef.current,
-      topicRef.current,
-      promptContentRef.current,
-      setAskId,
-      onStream,
-      onFinish,
-      onError
+  const latestAssistantUIMsg = useMemo<CherryUIMessage | undefined>(() => liveAssistants.at(-1), [liveAssistants])
+
+  const partsMap = useMemo<Record<string, CherryMessagePart[]>>(
+    () =>
+      latestAssistantUIMsg ? { [latestAssistantUIMsg.id]: latestAssistantUIMsg.parts as CherryMessagePart[] } : {},
+    [latestAssistantUIMsg]
+  )
+
+  const latestAssistantMessage = useMemo(() => {
+    if (!latestAssistantUIMsg) return null
+    return toMessageListItem(
+      {
+        ...latestAssistantUIMsg,
+        metadata: {
+          ...latestAssistantUIMsg.metadata,
+          status: isPending ? 'pending' : 'success'
+        }
+      },
+      { assistantId: chosenAssistantId, topicId: temporaryTopicId ?? '' }
     )
-  }, [scrollToBottom])
+  }, [chosenAssistantId, latestAssistantUIMsg, isPending, temporaryTopicId])
+
+  const content = useMemo(
+    () => (latestAssistantUIMsg ? getTextFromParts(latestAssistantUIMsg.parts as CherryMessagePart[]) : ''),
+    [latestAssistantUIMsg]
+  )
+
+  const isStreaming = isPending
+  const error = completionError
+
+  const fetchResult = useCallback(() => {
+    if (!ready || !temporaryTopicId || waitingForConfiguredAssistant) return
+    logger.debug('Before process message', { assistantId: chosenAssistantId })
+    setCompletionError(null)
+    setIsPreparing(true)
+    // topicId comes from useChat id; Main resolves assistant/model from topic.assistantId.
+    // No body fields are read by IpcChatTransport for this codepath.
+    void sendMessage({ text: promptContent })
+  }, [chosenAssistantId, promptContent, ready, sendMessage, temporaryTopicId, waitingForConfiguredAssistant])
 
   useEffect(() => {
     fetchResult()
   }, [fetchResult])
 
-  const allMessages = useTopicMessages(topicRef.current?.id || '')
-
-  const currentAssistantMessage = useMemo(() => {
-    const assistantMessages = allMessages.filter((message) => message.role === 'assistant')
-    if (assistantMessages.length === 0) {
-      return null
-    }
-    return assistantMessages[assistantMessages.length - 1]
-  }, [allMessages])
-
-  useEffect(() => {
-    // Sync message status
-    switch (currentAssistantMessage?.status) {
-      case AssistantMessageStatus.PROCESSING:
-      case AssistantMessageStatus.PENDING:
-      case AssistantMessageStatus.SEARCHING:
-        setStatus('streaming')
-        break
-      case AssistantMessageStatus.PAUSED:
-      case AssistantMessageStatus.ERROR:
-      case AssistantMessageStatus.SUCCESS:
-        setStatus('finished')
-        break
-      case undefined:
-        break
-      default:
-        logger.warn('Unexpected assistant message status:', { status: currentAssistantMessage?.status })
-    }
-  }, [currentAssistantMessage?.status])
-
-  const isPreparing = status === 'preparing'
-  const isStreaming = status === 'streaming'
-
   const handlePause = () => {
-    if (askId.current) {
-      abortCompletion(askId.current)
-    }
-    if (topicRef.current?.id) {
-      void pauseTrace(topicRef.current.id)
-    }
+    void stopChat()
   }
 
   const handleRegenerate = () => {
-    setContentToCopy('')
     fetchResult()
   }
 
   return (
     <>
-      <Container>
-        <MenuContainer>
-          <OriginalHeader onClick={() => setShowOriginal(!showOriginal)}>
+      <div className="flex w-full flex-col items-center justify-center">
+        <div className="flex w-full flex-row items-center justify-end">
+          <button
+            type="button"
+            onClick={() => setShowOriginal(!showOriginal)}
+            className="flex cursor-pointer items-center justify-between text-foreground-secondary text-xs transition-colors hover:text-primary">
             <span>
               {showOriginal ? t('selection.action.window.original_hide') : t('selection.action.window.original_show')}
             </span>
-            <ChevronDown size={14} className={showOriginal ? 'expanded' : ''} />
-          </OriginalHeader>
-        </MenuContainer>
+            <ChevronDown size={14} className={cn('transition-transform', showOriginal && 'rotate-180')} />
+          </button>
+        </div>
         {showOriginal && (
-          <OriginalContent>
+          <div className="mt-2 mb-3 w-full whitespace-pre-wrap break-words rounded bg-muted p-2 text-foreground-secondary text-xs">
             {action.selectedText}
-            <OriginalContentCopyWrapper>
+            <div className="flex justify-end">
               <CopyButton
                 textToCopy={action.selectedText!}
                 tooltip={t('selection.action.window.original_copy')}
                 size={12}
               />
-            </OriginalContentCopyWrapper>
-          </OriginalContent>
+            </div>
+          </div>
         )}
-        <Result>
-          {isPreparing && <LoadingOutlined style={{ fontSize: 16 }} spin />}
-          {!isPreparing && currentAssistantMessage && (
-            <MessageContent key={currentAssistantMessage.id} message={currentAssistantMessage} />
+        <div className="mt-1 w-full">
+          {isPreparing && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
+          {!isPreparing && latestAssistantMessage && (
+            <MessageContentProvider
+              messages={[latestAssistantMessage]}
+              partsByMessageId={partsMap}
+              renderConfig={renderConfig}
+              actions={platformActions}>
+              <MessageContent key={latestAssistantMessage.id} message={latestAssistantMessage} />
+            </MessageContentProvider>
           )}
-        </Result>
-        {error && <ErrorMsg>{error}</ErrorMsg>}
-      </Container>
-      <FooterPadding />
-      <WindowFooter
-        loading={isStreaming}
-        onPause={handlePause}
-        onRegenerate={handleRegenerate}
-        content={contentToCopy}
-      />
+        </div>
+        {error && (
+          <div className="mb-3 break-all rounded border border-error-border bg-error-bg px-3 py-2 text-[13px] text-error-text">
+            {error}
+          </div>
+        )}
+      </div>
+      <div className="min-h-3" />
+      <WindowFooter loading={isStreaming} onPause={handlePause} onRegenerate={handleRegenerate} content={content} />
     </>
   )
 })
-
-const Container = styled.div`
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-`
-
-const Result = styled.div`
-  margin-top: 4px;
-  width: 100%;
-`
-
-const MenuContainer = styled.div`
-  display: flex;
-  width: 100%;
-  flex-direction: row;
-  align-items: center;
-  justify-content: flex-end;
-`
-
-const OriginalHeader = styled.div`
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  cursor: pointer;
-  color: var(--color-text-secondary);
-  font-size: 12px;
-
-  &:hover {
-    color: var(--color-primary);
-  }
-
-  .lucide {
-    transition: transform 0.2s ease;
-    &.expanded {
-      transform: rotate(180deg);
-    }
-  }
-`
-
-const OriginalContent = styled.div`
-  padding: 8px;
-  margin-top: 8px;
-  margin-bottom: 12px;
-  background-color: var(--color-background-soft);
-  border-radius: 4px;
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  width: 100%;
-`
-
-const OriginalContentCopyWrapper = styled.div`
-  display: flex;
-  justify-content: flex-end;
-`
-
-const FooterPadding = styled.div`
-  min-height: 12px;
-`
-
-const ErrorMsg = styled.div`
-  color: var(--color-error);
-  background: rgba(255, 0, 0, 0.15);
-  border: 1px solid var(--color-error);
-  padding: 8px 12px;
-  border-radius: 4px;
-  margin-bottom: 12px;
-  font-size: 13px;
-  word-break: break-all;
-`
 
 export default ActionGeneral

@@ -12,6 +12,7 @@
  */
 
 import { MODALITY, VENDOR_PATTERNS } from '@cherrystudio/provider-registry'
+import { CHERRYAI_PROVIDER_ID } from '@shared/data/presets/cherryai'
 import type { Model, RuntimeReasoning, ThinkingTokenLimits } from '@shared/data/types/model'
 import { MODEL_CAPABILITY, parseUniqueModelId } from '@shared/data/types/model'
 
@@ -48,7 +49,7 @@ export const isGenerateImageModel = (model: Model): boolean =>
   model.capabilities.includes(MODEL_CAPABILITY.IMAGE_GENERATION)
 
 export const isFreeModel = (model: Pick<Model, 'id' | 'name' | 'providerId'>): boolean => {
-  if (model.providerId === 'cherryai') {
+  if (model.providerId === CHERRYAI_PROVIDER_ID) {
     return true
   }
 
@@ -64,11 +65,20 @@ export const isGenerateAudioModel = (model: Model): boolean =>
 export const isEditImageModel = (model: Model): boolean =>
   !!(model.capabilities.includes(MODEL_CAPABILITY.IMAGE_GENERATION) && model.inputModalities?.includes(MODALITY.IMAGE))
 
+// A dedicated speech-to-text model is identified by the explicit AUDIO_TRANSCRIPT
+// capability only. Accepting audio as an *input modality* does NOT make a model
+// speech-to-text — multimodal chat LLMs (Gemini, GPT-4o, …) take audio input yet are
+// still general chat models, and keying on the modality wrongly classified them as
+// non-chat (via `isNonChatModel`) and hid them from every model picker.
 export const isSpeechToTextModel = (model: Model): boolean =>
-  !!(model.capabilities.includes(MODEL_CAPABILITY.AUDIO_TRANSCRIPT) || model.inputModalities?.includes(MODALITY.AUDIO))
+  model.capabilities.includes(MODEL_CAPABILITY.AUDIO_TRANSCRIPT)
 
+// Mirror of `isSpeechToTextModel`: a dedicated text-to-speech model is identified by
+// the explicit AUDIO_GENERATION capability only. Producing audio as an *output
+// modality* does NOT make a model text-to-speech — multimodal chat LLMs can emit audio
+// yet still chat, and keying on the modality wrongly classified them as non-chat.
 export const isTextToSpeechModel = (model: Model): boolean =>
-  !!(model.capabilities.includes(MODEL_CAPABILITY.AUDIO_GENERATION) || model.outputModalities?.includes(MODALITY.AUDIO))
+  model.capabilities.includes(MODEL_CAPABILITY.AUDIO_GENERATION)
 
 /** Check if model is a dedicated text-to-image model (no text chat) */
 export const isTextToImageModel = (model: Model): boolean =>
@@ -167,8 +177,10 @@ export const isGeminiModel = (model: Model): boolean =>
   VENDOR_PATTERNS.gemini.test(getLowerBaseModelName(getRawModelId(model)))
 
 /** Check if model is Gemini 3 series (sub-family of Gemini, ID-specific). */
-export const isGemini3Model = (model: Model): boolean =>
-  getLowerBaseModelName(getRawModelId(model)).includes('gemini-3')
+export const isGemini3Model = (model: Model): boolean => {
+  const id = getLowerBaseModelName(getRawModelId(model))
+  return id.includes('gemini-3') || id === 'gemini-flash-latest' || id === 'gemini-pro-latest'
+}
 
 /** Check if model is a Grok model */
 export const isGrokModel = (model: Model): boolean =>
@@ -242,7 +254,10 @@ export const isMistralModel = vendorCheck(VENDOR_PATTERNS.mistral)
 export const isOpenAIReasoningModel = (model: Model): boolean => isOpenAIModel(model) && isReasoningModel(model)
 
 /** Check if model only supports chat completion (no responses API) */
-export const isOpenAIChatCompletionOnlyModel = (m: Model) => isOpenAIWebSearchChatCompletionOnlyModel(m)
+export const isOpenAIChatCompletionOnlyModel = (m: Model) => {
+  const id = getLowerBaseModelName(getRawModelId(m))
+  return isOpenAIWebSearchChatCompletionOnlyModel(m) || id.includes('o1-mini') || id.includes('o1-preview')
+}
 
 /** Check if model supports web search in chat completion mode only */
 export const isOpenAIWebSearchChatCompletionOnlyModel = (model: Model): boolean => {
@@ -371,7 +386,7 @@ export const isGemini3ThinkingTokenModel = (model: Model): boolean => {
  * legacy regex used to gate on.
  */
 export const isSupportedThinkingTokenGeminiModel = (model: Model): boolean =>
-  isGeminiModel(model) && isSupportedThinkingTokenModel(model)
+  (isGeminiModel(model) || isHostedGemma4ThinkingModel(model)) && isSupportedThinkingTokenModel(model)
 
 /**
  * Grok reasoning-effort support = Grok vendor + supportedEfforts populated.
@@ -488,8 +503,14 @@ export const isSupportedThinkingTokenMiMoModel = (model: Model): boolean =>
 export const isSupportedThinkingTokenKimiModel = (model: Model): boolean =>
   isKimiModel(model) && isSupportedThinkingTokenModel(model)
 
-export const isDeepSeekV4PlusModel = (model: Model): boolean =>
-  /(\w+-)?deepseek-v3(?:\.\d|-\d)(?:(\.|-)(?!speciale$)\w+)?$/.test(model.id)
+const isDeepSeekV4PlusId = (id: string): boolean =>
+  /deepseek-v(?:[4-9]\d*|[1-9]\d{1,})(?:\.\d+)?(?:-[\w]+)*(?=$|[:/])/i.test(id)
+
+export const isDeepSeekV4PlusModel = (model: Model): boolean => {
+  const id = getLowerBaseModelName(getRawModelId(model))
+  const name = getLowerBaseModelName(model.name ?? '')
+  return isDeepSeekV4PlusId(id) || isDeepSeekV4PlusId(name)
+}
 
 /** DeepSeek model that does runtime hybrid inference (thinking / non-thinking at same endpoint). */
 export const isDeepSeekHybridInferenceModel = (model: Model): boolean => {
@@ -633,9 +654,11 @@ export function inferReasoningFromModelId(rawModelId: string): boolean {
     id.includes('hunyuan-t1') ||
     id.includes('hunyuan-a13b') ||
     /glm-?5|glm-4\.[567]|glm-z1/.test(id) ||
-    ['mimo-v2-flash', 'mimo-v2-pro', 'mimo-v2-omni'].some((m) => id.includes(m)) ||
-    /^kimi-k2-thinking(?:-turbo)?$|^kimi-k2\.5(?:-[\w-]+)?$/.test(id) ||
+    /mimo-v2\.5(?:-pro)?(?!-)|mimo-v2-(?:flash|pro|omni)/.test(id) ||
+    /^kimi-k2-thinking(?:-turbo)?$|^kimi-k(?:2\.[5-9]\d*|[3-9]\d*(?:\.\d+)?)(?:-[\w-]+)?$/.test(id) ||
     id.includes('magistral') ||
+    id.includes('mistral-small-2603') ||
+    id.includes('grok-build') ||
     id.includes('pangu-pro-moe') ||
     id.includes('seed-oss') ||
     id.includes('deepseek-v3.2-speciale') ||
@@ -643,7 +666,7 @@ export function inferReasoningFromModelId(rawModelId: string): boolean {
     id.includes('gemma4') ||
     id.includes('step-3') ||
     id.includes('step-r1-v-mini') ||
-    ['minimax-m1', 'minimax-m2', 'minimax-m2.1'].some((m) => id.includes(m)) ||
+    ['minimax-m1', 'minimax-m2', 'minimax-m2.1', 'minimax-m3'].some((m) => id.includes(m)) ||
     id === 'baichuan-m2' ||
     id === 'baichuan-m3' ||
     ['ring-1t', 'ring-mini', 'ring-flash'].some((m) => id.includes(m)) ||
@@ -668,6 +691,7 @@ function inferOpenAIReasoningFromId(id: string): boolean {
 /** Infer whether a raw model ID represents a vision model */
 export function inferVisionFromModelId(rawModelId: string): boolean {
   const id = getLowerBaseModelName(rawModelId)
+  if (/^qwen(?:3\.[5-9]-?max|[-]?max)(?:-|$)?/.test(id)) return false
   return VISION_REGEX.test(id) || IMAGE_ENHANCEMENT_REGEX.test(id)
 }
 
@@ -749,7 +773,8 @@ const FUNCTION_CALLING_ALLOWED_MODELS = [
   'kimi-k2(?:-[\\w-]+)?',
   'ling-\\w+(?:-[\\w-]+)?',
   'ring-\\w+(?:-[\\w-]+)?',
-  'minimax-m2(?:\\.\\d+)?(?:-[\\w-]+)?',
+  'minimax-m[23](?:\\.\\d+)?(?:-[\\w-]+)?',
+  'mimo-v2\\.5(?:-pro)?(?!-)',
   'mimo-v2-flash',
   'mimo-v2-pro',
   'mimo-v2-omni',
@@ -769,7 +794,8 @@ const FUNCTION_CALLING_EXCLUDED_MODELS = [
   'gemini-2.5-flash-image(?:-[\\w-]+)?',
   'gemini-2.0-flash-preview-image-generation',
   'gemini-3(?:\\.\\d+)?-pro-image(?:-[\\w-]+)?',
-  'deepseek-v3.2-speciale'
+  'deepseek-v3.2-speciale',
+  'deepseek-r1(?:[-:][\\w.-]+)?'
 ]
 
 export const FUNCTION_CALLING_REGEX = new RegExp(
@@ -806,6 +832,7 @@ const THINKING_TOKEN_MAP: Record<string, { min: number; max: number }> = {
   'qwen-max-latest$': { min: 0, max: 81_920 },
   '^qwen3\\.[5-9]': { min: 0, max: 81_920 },
   'qwen3-(?!max).*$': { min: 1024, max: 38_912 },
+  '(?:anthropic\\.)?claude-opus-4[.-]7(?:[@\\-:][\\w\\-:]+)?$': { min: 1024, max: 128_000 },
   '(?:anthropic\\.)?claude-opus-4[.-]6(?:[@\\-:][\\w\\-:]+)?$': { min: 1024, max: 128_000 },
   '(?:anthropic\\.)?claude-(:?sonnet|haiku)-4[.-]6.*(?:-v\\d+:\\d+)?$': { min: 1024, max: 64_000 },
   '(?:anthropic\\.)?claude-(:?haiku|sonnet|opus)-4[.-]5.*(?:-v\\d+:\\d+)?$': { min: 1024, max: 64_000 },
@@ -830,9 +857,10 @@ const THINKING_TOKEN_MAP: Record<string, { min: number; max: number }> = {
   // provider-prefixed ids (zhipu/glm-4.6, fireworks normalized form).
   'glm-?5|glm-4\\.[567]': { min: 0, max: 30_720 },
   // MiMo v2 family.
+  'mimo-v2\\.5(?:-pro)?(?!-)': { min: 0, max: 30_720 },
   'mimo-v2-(?:flash|pro|omni)': { min: 0, max: 30_720 },
-  // Kimi K2.5.
-  'kimi-k2\\.5': { min: 0, max: 30_720 },
+  // Kimi K2.5+ / K3+.
+  'kimi-k(?:2\\.[5-9]\\d*|[3-9]\\d*(?:\\.\\d+)?)': { min: 0, max: 30_720 },
   // Doubao thinking SKUs (mirrors DOUBAO_THINKING_MODEL_REGEX scope).
   // The `(?!-thinking(?:-|$))` lookahead excludes always-thinking seed variants.
   'doubao-(?:1[.-]5-thinking-vision-pro|1[.-]5-thinking-pro-m|seed-1[.-][68](?:-flash)?(?!-thinking(?:-|$))|seed-code(?:-preview)?(?:-\\d+)?|seed-2[.-]0(?:-[\\w-]+)?)(?:-[\\w-]+)*':
@@ -895,7 +923,8 @@ function inferDeepSeekHybridFromId(id: string): boolean {
   return (
     /(\w+-)?deepseek-v3(?:\.\d|-\d)(?:(\.|-)(?!speciale$)\w+)?$/.test(id) ||
     id.includes('deepseek-chat-v3.1') ||
-    id.includes('deepseek-chat')
+    id.includes('deepseek-chat') ||
+    isDeepSeekV4PlusId(id)
   )
 }
 
@@ -1009,7 +1038,8 @@ const visionAllowedModels = [
   'qwen-omni(?:-[\\w-]+)?',
   'mistral-large-(2512|latest)',
   'mistral-medium-(2508|latest)',
-  'mistral-small-(2506|latest)',
+  'mistral-small-(2506|2603|latest)',
+  'mimo-v2\\.5(?!-)',
   'mimo-v2-omni(?:-[\\w-]+)?',
   'glm-5v-turbo'
 ]
@@ -1083,7 +1113,7 @@ export const isZhipuReasoningModel = (model: Model): boolean => isZhipuModel(mod
  */
 export const isKimiReasoningModel = (model: Model): boolean => {
   const id = getLowerBaseModelName(getRawModelId(model), '/')
-  return /^kimi-k2-thinking(?:-turbo)?$|^kimi-k2\.5(?:-[\w-]+)?$/.test(id)
+  return /^kimi-k2-thinking(?:-turbo)?$|^kimi-k(?:2\.[5-9]\d*|[3-9]\d*(?:\.\d+)?)(?:-[\w-]+)?$/.test(id)
 }
 
 export const isBaichuanReasoningModel = (model: Model): boolean => isBaichuanModel(model) && isReasoningModel(model)

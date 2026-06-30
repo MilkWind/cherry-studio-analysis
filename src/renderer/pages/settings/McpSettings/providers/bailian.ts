@@ -1,7 +1,7 @@
 import { loggerService } from '@logger'
-import { nanoid } from '@reduxjs/toolkit'
-import type { MCPServer } from '@renderer/types'
+import type { McpServer } from '@shared/data/types/mcpServer'
 import i18next from 'i18next'
+import { nanoid } from 'nanoid'
 
 const logger = loggerService.withContext('BailianSyncUtils')
 
@@ -53,7 +53,7 @@ interface McpServerCherryDetailResponse {
 export interface BailianSyncResult {
   success: boolean
   message: string
-  allServers: MCPServer[]
+  allServers: McpServer[]
   errorDetails?: string
 }
 
@@ -114,7 +114,7 @@ export const syncBailianServers = async (token: string): Promise<BailianSyncResu
   try {
     const servers = await fetchAllMcpServers(token)
 
-    const allServers: MCPServer[] = []
+    const allServers: McpServer[] = []
 
     for (const server of servers) {
       try {
@@ -122,7 +122,7 @@ export const syncBailianServers = async (token: string): Promise<BailianSyncResu
           continue
         }
 
-        const mcpServer: MCPServer = {
+        const mcpServer: McpServer = {
           id: `@bailian/${server.id}`,
           name: server.name || `Bailian Server ${nanoid()}`,
           description: server.description || '',

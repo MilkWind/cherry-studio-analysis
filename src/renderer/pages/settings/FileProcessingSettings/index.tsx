@@ -1,17 +1,19 @@
-import { Badge, MenuItem, MenuList, PageHeader } from '@cherrystudio/ui'
+import { Badge, InfoTooltip, MenuDivider, MenuItem, MenuList, PageHeader } from '@cherrystudio/ui'
 import Scrollbar from '@renderer/components/Scrollbar'
-import { useTheme } from '@renderer/context/ThemeProvider'
+import { useTheme } from '@renderer/hooks/useTheme'
 import type { FC } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
   SettingsContentBody,
   settingsContentScrollClassName,
+  settingsSubmenuDividerClassName,
   settingsSubmenuItemClassName,
   settingsSubmenuItemLabelClassName,
   settingsSubmenuListClassName,
-  settingsSubmenuScrollClassName
+  settingsSubmenuScrollClassName,
+  settingsSubmenuSectionTitleClassName
 } from '..'
 import { ProcessorAvatar } from './components/ProcessorAvatar'
 import { ProcessorPanel } from './components/ProcessorPanel'
@@ -21,6 +23,8 @@ import {
   type FileProcessingMenuEntry,
   flattenFeatureSections,
   getFeatureSections,
+  getFileProcessingFeatureTitleKey,
+  getFileProcessingFeatureTooltipKey,
   getProcessorNameKey
 } from './utils/fileProcessingMeta'
 
@@ -67,29 +71,42 @@ const FileProcessingSettings: FC = () => {
           <PageHeader title={t('settings.tool.file_processing.title')} />
           <Scrollbar className="min-h-0 flex-1">
             <MenuList className={settingsSubmenuListClassName}>
-              {menuEntries.map((entry) => (
-                <MenuItem
-                  key={entry.key}
-                  label={t(getProcessorNameKey(entry.processor.id))}
-                  active={activeEntryKey === entry.key}
-                  onClick={() => setActiveKey(entry.key)}
-                  icon={
-                    <ProcessorAvatar
-                      processorId={entry.processor.id}
-                      size="md"
-                      className="shrink-0 rounded-lg border border-border/30"
+              {featureSections.map((section, index) => (
+                <Fragment key={section.feature}>
+                  {index > 0 ? <MenuDivider className={settingsSubmenuDividerClassName} /> : null}
+                  <div className={`${settingsSubmenuSectionTitleClassName} flex items-center gap-1.5`}>
+                    <span>{t(getFileProcessingFeatureTitleKey(section.feature))}</span>
+                    <InfoTooltip
+                      content={t(getFileProcessingFeatureTooltipKey(section.feature))}
+                      placement="right"
+                      iconProps={{ size: 13, color: 'currentColor', className: 'opacity-80' }}
                     />
-                  }
-                  className={settingsSubmenuItemClassName}
-                  labelClassName={settingsSubmenuItemLabelClassName}
-                  suffix={
-                    isDefaultEntry(entry) ? (
-                      <Badge className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 font-medium text-green-600 text-xs dark:text-green-400">
-                        {t('common.default')}
-                      </Badge>
-                    ) : undefined
-                  }
-                />
+                  </div>
+                  {section.entries.map((entry) => (
+                    <MenuItem
+                      key={entry.key}
+                      label={t(getProcessorNameKey(entry.processor.id))}
+                      active={activeEntryKey === entry.key}
+                      onClick={() => setActiveKey(entry.key)}
+                      icon={
+                        <ProcessorAvatar
+                          processorId={entry.processor.id}
+                          size="md"
+                          className="shrink-0 rounded-lg border border-border/30"
+                        />
+                      }
+                      className={settingsSubmenuItemClassName}
+                      labelClassName={settingsSubmenuItemLabelClassName}
+                      suffix={
+                        isDefaultEntry(entry) ? (
+                          <Badge className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 font-medium text-green-600 text-xs dark:text-green-400">
+                            {t('common.default')}
+                          </Badge>
+                        ) : undefined
+                      }
+                    />
+                  ))}
+                </Fragment>
               ))}
             </MenuList>
           </Scrollbar>

@@ -1,53 +1,34 @@
 import { Button, ConfirmDialog } from '@cherrystudio/ui'
 import { formatErrorMessageWithPrefix } from '@renderer/utils/error'
 import type { KnowledgeItem, KnowledgeItemType } from '@shared/data/types/knowledge'
-import type { ChangeEvent, DragEvent } from 'react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import {
-  KNOWLEDGE_DATA_SOURCE_TYPES,
-  KNOWLEDGE_SUPPORTED_FILE_TYPES
-} from '../../components/addKnowledgeItemDialog/constants'
+import { KNOWLEDGE_DATA_SOURCE_TYPES } from '../../components/addKnowledgeItemDialog/constants'
 import KnowledgePanelShell from '../../components/KnowledgePanelShell'
 import { usePreviewKnowledgeSource } from '../../hooks/usePreviewKnowledgeSource'
 import DataSourcePanelHeader from './DataSourcePanelHeader'
 import KnowledgeItemList from './KnowledgeItemList'
-import type { DataSourceFilter } from './utils/models'
 import { dataSourceTypeDisplayConfig } from './utils/models'
-import { getItemTitle, getReadyCount, getVisibleItems } from './utils/selectors'
 
 export interface DataSourcePanelProps {
   items: KnowledgeItem[]
+  /** Server-side total across all pages. Defaults to the loaded count when omitted. */
+  total?: number
   isLoading: boolean
-  searchQuery?: string
+  /** Cursor-pagination controls; default to a fully-loaded list when omitted. */
+  hasMore?: boolean
+  isLoadingMore?: boolean
+  onLoadMore?: () => void
+  updatedAt: string
   onAdd: (source?: KnowledgeItemType, files?: File[]) => void
   onItemClick?: (itemId: string) => void
   onDelete: (item: KnowledgeItem) => void | Promise<unknown>
   onReindex: (item: KnowledgeItem) => void | Promise<unknown>
 }
 
-const matchesSearch = (item: KnowledgeItem, query: string) => {
-  if (!query) {
-    return true
-  }
-  return getItemTitle(item).toLowerCase().includes(query.toLowerCase())
-}
-
-const getAvailableSourceTypes = (activeFilter: DataSourceFilter) =>
-  activeFilter === 'all'
-    ? KNOWLEDGE_DATA_SOURCE_TYPES
-    : KNOWLEDGE_DATA_SOURCE_TYPES.filter((source) => source.value === activeFilter)
-
-const DataSourceEmptyState = ({
-  activeFilter,
-  onAddSource
-}: {
-  activeFilter: DataSourceFilter
-  onAddSource: (source: KnowledgeItemType) => void
-}) => {
+const DataSourceEmptyState = ({ onAddSource }: { onAddSource: (source: KnowledgeItemType) => void }) => {
   const { t } = useTranslation()
-  const availableSourceTypes = getAvailableSourceTypes(activeFilter)
 
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center px-6 py-12 text-center">
@@ -56,26 +37,24 @@ const DataSourceEmptyState = ({
           {t('knowledge.data_source.empty_description')}
         </h3>
         <p className="mt-2 text-foreground-muted text-sm leading-5">{t('knowledge.data_source.empty.title')}</p>
-        {availableSourceTypes.length > 0 ? (
-          <div className="mt-7 flex flex-wrap justify-center gap-2.5">
-            {availableSourceTypes.map((source) => {
-              const Icon = dataSourceTypeDisplayConfig[source.value].icon.icon
+        <div className="mt-7 flex flex-wrap justify-center gap-2.5">
+          {KNOWLEDGE_DATA_SOURCE_TYPES.map((source) => {
+            const Icon = dataSourceTypeDisplayConfig[source.value].icon.icon
 
-              return (
-                <Button
-                  key={source.value}
-                  type="button"
-                  variant="outline"
-                  size="lg"
-                  className="h-9 w-24 rounded-lg px-3 font-medium"
-                  onClick={() => onAddSource(source.value)}>
-                  <Icon className="size-4 text-foreground-secondary" />
-                  {t(source.labelKey)}
-                </Button>
-              )
-            })}
-          </div>
-        ) : null}
+            return (
+              <Button
+                key={source.value}
+                type="button"
+                variant="outline"
+                size="lg"
+                className="h-9 w-24 rounded-lg px-3 font-medium"
+                onClick={() => onAddSource(source.value)}>
+                <Icon className="size-4 text-foreground-secondary" />
+                {t(source.labelKey)}
+              </Button>
+            )
+          })}
+        </div>
       </div>
     </div>
   )
@@ -83,8 +62,12 @@ const DataSourceEmptyState = ({
 
 const DataSourcePanel = ({
   items,
+  total = items.length,
   isLoading,
-  searchQuery = '',
+  hasMore = false,
+  isLoadingMore = false,
+  onLoadMore = () => undefined,
+  updatedAt,
   onAdd,
   onItemClick,
   onDelete,
@@ -92,17 +75,9 @@ const DataSourcePanel = ({
 }: DataSourcePanelProps) => {
   const { t } = useTranslation()
   const { previewSource } = usePreviewKnowledgeSource()
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const [activeFilter, setActiveFilter] = useState<DataSourceFilter>('all')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [pendingDeleteItem, setPendingDeleteItem] = useState<KnowledgeItem | null>(null)
   const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false)
-
-  const filteredByType = useMemo(() => getVisibleItems(items, activeFilter), [items, activeFilter])
-  const visibleItems = useMemo(
-    () => filteredByType.filter((item) => matchesSearch(item, searchQuery)),
-    [filteredByType, searchQuery]
-  )
 
   useEffect(() => {
     setSelectedIds((prev) => {
@@ -112,10 +87,6 @@ const DataSourcePanel = ({
       return next.size === prev.size ? prev : next
     })
   }, [items])
-
-  const readyCount = useMemo(() => getReadyCount(items), [items])
-  const supportedFileHint = t('knowledge.file_hint', { file_types: KNOWLEDGE_SUPPORTED_FILE_TYPES })
-  const shouldShowFooterDropzone = !isLoading && items.length === 0 && activeFilter === 'file'
 
   const handleItemClick = (itemId: string) => onItemClick?.(itemId)
 
@@ -133,14 +104,10 @@ const DataSourcePanel = ({
 
   const handleToggleAll = useCallback(
     (next: boolean) => {
-      setSelectedIds(next ? new Set(visibleItems.map((item) => item.id)) : new Set())
+      setSelectedIds(next ? new Set(items.map((item) => item.id)) : new Set())
     },
-    [visibleItems]
+    [items]
   )
-
-  const handleCancelBulk = useCallback(() => {
-    setSelectedIds(new Set())
-  }, [])
 
   const handleBulkReindex = useCallback(async () => {
     const targets = items.filter((item) => selectedIds.has(item.id))
@@ -180,80 +147,34 @@ const DataSourcePanel = ({
     setPendingDeleteItem(null)
   }
 
-  const handleFooterFileSelect = (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? [])
-    event.target.value = ''
-
-    if (files.length > 0) {
-      onAdd('file', files)
-    }
-  }
-
-  const handleFooterDrop = (event: DragEvent<HTMLButtonElement>) => {
-    event.preventDefault()
-
-    const files = Array.from(event.dataTransfer.files)
-    if (files.length > 0) {
-      onAdd('file', files)
-    }
-  }
-
-  const openFilePicker = useCallback(() => {
-    fileInputRef.current?.click()
-  }, [])
-
-  const handleAddSource = useCallback(
-    (source?: KnowledgeItemType, files?: File[]) => {
-      if (source === 'file' && !files?.length) {
-        openFilePicker()
-        return
-      }
-
-      if (files?.length) {
-        onAdd(source, files)
-        return
-      }
-
-      onAdd(source)
-    },
-    [onAdd, openFilePicker]
-  )
+  const handleAddSource = useCallback((source: KnowledgeItemType) => onAdd(source), [onAdd])
 
   return (
     <KnowledgePanelShell
-      headerClassName="shrink-0 px-3 pt-4"
+      headerClassName="shrink-0 px-3 pt-1"
       header={
         <div className="border-border-muted border-b pb-3">
           <DataSourcePanelHeader
-            activeFilter={activeFilter}
-            onFilterChange={setActiveFilter}
-            readyCount={readyCount}
-            totalCount={items.length}
+            total={total}
+            loadedCount={items.length}
             selectedCount={selectedIds.size}
+            updatedAt={updatedAt}
             onBulkReindex={handleBulkReindex}
             onBulkDelete={() => setIsBulkDeleteOpen(true)}
-            onCancelBulk={handleCancelBulk}
             onAdd={handleAddSource}
           />
         </div>
       }>
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        className="sr-only"
-        tabIndex={-1}
-        aria-hidden="true"
-        onChange={handleFooterFileSelect}
-      />
       <div className="flex min-h-0 flex-1 flex-col">
         {!isLoading && items.length === 0 ? (
-          <DataSourceEmptyState activeFilter={activeFilter} onAddSource={handleAddSource} />
+          <DataSourceEmptyState onAddSource={handleAddSource} />
         ) : (
           <KnowledgeItemList
-            items={visibleItems}
-            allItemsCount={items.length}
+            items={items}
             isLoading={isLoading}
+            hasMore={hasMore}
+            isLoadingMore={isLoadingMore}
+            onLoadMore={onLoadMore}
             selectedIds={selectedIds}
             onToggleOne={handleToggleOne}
             onToggleAll={handleToggleAll}
@@ -264,20 +185,6 @@ const DataSourcePanel = ({
             onViewChunks={handleItemClick}
           />
         )}
-        {shouldShowFooterDropzone ? (
-          <div className="mt-auto shrink-0 px-3 pt-3 pb-4">
-            <button
-              type="button"
-              data-testid="knowledge-data-source-footer-dropzone"
-              className="flex min-h-24 w-full flex-col items-center justify-center gap-2.5 whitespace-normal rounded-md border border-border-muted border-dashed px-4 py-4 text-center text-foreground-muted text-sm shadow-none transition-colors hover:border-border-hover hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-              onClick={openFilePicker}
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={handleFooterDrop}>
-              <span className="leading-5">{t('knowledge.drag_file')}</span>
-              <span className="text-xs leading-5">{supportedFileHint}</span>
-            </button>
-          </div>
-        ) : null}
       </div>
       <ConfirmDialog
         open={Boolean(pendingDeleteItem)}

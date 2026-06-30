@@ -1,195 +1,653 @@
 import { usePreference } from '@data/hooks/usePreference'
-import { ErrorBoundary } from '@renderer/components/ErrorBoundary'
-import { useAssistants } from '@renderer/hooks/useAssistant'
-import { useNavbarPosition } from '@renderer/hooks/useNavbar'
-import { useShortcut } from '@renderer/hooks/useShortcuts'
-import { useShowAssistants, useShowTopics } from '@renderer/hooks/useStore'
-import { useActiveTopic } from '@renderer/hooks/useTopic'
+import { loggerService } from '@logger'
+import {
+  ChatAppShell,
+  type ChatPanePosition,
+  ConversationShell,
+  ConversationStageCenter,
+  EmptyState,
+  LoadingState
+} from '@renderer/components/chat'
+import type { ResourceListRevealRequest } from '@renderer/components/chat/resources'
+import type { ResourceListRevealPayload } from '@renderer/components/chat/resources/resourceListRevealEvents'
+import { useWindowFrame } from '@renderer/components/chat/shell/WindowFrameContext'
+import { ChatHomePlacementComposer } from '@renderer/components/composer/variants/ChatComposer'
+import {
+  createRecentTopicEntryFromTopic,
+  upsertGlobalSearchRecentEntry
+} from '@renderer/components/GlobalSearch/globalSearchGroups'
+import { usePersistCache } from '@renderer/data/hooks/useCache'
+import { useCommandHandler } from '@renderer/hooks/command'
+import { useCurrentTab, useCurrentTabId, useIsActiveTab, useTabSelfMetadata } from '@renderer/hooks/tab'
+import { useAssistantApiById, useAssistants } from '@renderer/hooks/useAssistant'
+import { useConversationNavigation } from '@renderer/hooks/useConversationNavigation'
+import { mapApiTopicToRendererTopic, useActiveTopic, useTopicById, useTopicMutations } from '@renderer/hooks/useTopic'
+import { ipcApi } from '@renderer/ipc'
 import { EVENT_NAMES, EventEmitter } from '@renderer/services/EventService'
-import NavigationService from '@renderer/services/NavigationService'
-import { newMessagesActions } from '@renderer/store/newMessage'
-import type { Assistant, Topic } from '@renderer/types'
-import { MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, SECOND_MIN_WINDOW_WIDTH } from '@shared/config/constant'
-import { useLocation, useNavigate } from '@tanstack/react-router'
-import { AnimatePresence, motion } from 'motion/react'
-import type { FC } from 'react'
-import { startTransition, useCallback, useEffect, useState } from 'react'
-import { useDispatch } from 'react-redux'
-import styled from 'styled-components'
+import type { FileMetadata } from '@renderer/types/file'
+import type { Topic } from '@renderer/types/topic'
+import { getDefaultRouteTitle } from '@renderer/utils/routeTitle'
+import { cn } from '@renderer/utils/style'
+import { getTabInstanceKey } from '@renderer/utils/tabInstanceMetadata'
+import type { CherryMessagePart } from '@shared/data/types/message'
+import type { UniqueModelId } from '@shared/data/types/model'
+import { MIN_WINDOW_HEIGHT, SECOND_MIN_WINDOW_WIDTH } from '@shared/utils/window'
+import { useLocation, useSearch } from '@tanstack/react-router'
+import type { FC, HTMLAttributes, ReactNode } from 'react'
+import { useCallback, useEffect, useEffectEvent, useId, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
+import HistoryRecordsPage from '../history/HistoryRecordsPage'
 import Chat from './Chat'
-import Navbar from './Navbar'
+import ChatNavbar from './components/ChatNavbar'
+import { parseChatRouteSearch } from './routeSearch'
 import HomeTabs from './Tabs'
+import type { AddNewTopicPayload } from './types'
 
-let _activeAssistant: Assistant
+const logger = loggerService.withContext('HomePage')
+const LAST_USED_ASSISTANT_CACHE_KEY = 'ui.chat.last_used_assistant_id'
+
+type DraftAssistantSelectionSource = 'explicit' | 'last-used' | 'first-assistant' | 'runtime-fallback'
+type ResolvedDraftAssistantSelection = { assistantId?: string; source: DraftAssistantSelectionSource }
+type DraftAssistantStartState = {
+  firstLaunchStarted: boolean
+}
+
+type DraftAssistantSelection = {
+  assistantId?: string
+}
+
+type DraftChatSendOptions = {
+  files?: FileMetadata[]
+  mentionedModels?: UniqueModelId[]
+  knowledgeBaseIds?: string[]
+  userMessageParts?: CherryMessagePart[]
+}
 
 const HomePage: FC = () => {
-  const { assistants } = useAssistants()
-  const navigate = useNavigate()
-  const { isLeftNavbar } = useNavbarPosition()
+  const { t } = useTranslation()
+  const draftScopeId = useId()
+  const [topicRevealRequest, setTopicRevealRequest] = useState<ResourceListRevealRequest>()
+  const topicRevealRequestIdRef = useRef(0)
+  const draftAssistantStartStateRef = useRef<DraftAssistantStartState>({ firstLaunchStarted: false })
+  const draftAssistantSelectionRef = useRef<DraftAssistantSelection | null>(null)
+  const [draftAssistantSelection, setDraftAssistantSelection] = useState<DraftAssistantSelection | undefined>()
+  const [lastUsedAssistantId, setLastUsedAssistantId] = usePersistCache(LAST_USED_ASSISTANT_CACHE_KEY)
+  const [, setLastUsedTopicId] = usePersistCache('ui.chat.last_used_topic_id')
+  const [, setRecentItems] = usePersistCache('ui.global_search.recent_items')
+  const lastRecordedRecentTopicRef = useRef<string | undefined>(undefined)
+  const [pendingLocateMessageId, setPendingLocateMessageId] = useState<string | undefined>()
+  const [showSidebar, setShowSidebar] = usePreference('topic.tab.show')
+  const [historyRecordsOpen, setHistoryRecordsOpen] = useState(false)
 
   const location = useLocation()
-  const state = location.state as { assistant?: Assistant; topic?: Topic } | undefined
-
-  const [activeAssistant, _setActiveAssistant] = useState<Assistant>(
-    state?.assistant || _activeAssistant || assistants[0]
+  const routeSearch = parseChatRouteSearch(useSearch({ strict: false }) as Record<string, unknown>)
+  const currentTab = useCurrentTab()
+  const state = location.state as { topic?: Topic } | undefined
+  const routeTopicId = routeSearch.topicId
+  const tabMetadataTopicId = currentTab ? getTabInstanceKey(currentTab, 'assistants') : undefined
+  const routeAssistantId = routeTopicId ? undefined : routeSearch.assistantId
+  const isMessageOnlyView = routeSearch.view === 'message' && !!routeTopicId
+  // Detached windows are single-topic: no topic list, so no sidebar at all.
+  const isWindowFrame = useWindowFrame().mode === 'window'
+  const effectiveShowSidebar = !isMessageOnlyView && !isWindowFrame && showSidebar
+  const { topic: routeApiTopic, isLoading: isRouteTopicLoading } = useTopicById(
+    isMessageOnlyView ? routeTopicId : undefined
+  )
+  const routeTopic = useMemo(
+    () => (routeApiTopic ? mapApiTopicToRendererTopic(routeApiTopic) : undefined),
+    [routeApiTopic]
   )
 
-  const { activeTopic, setActiveTopic: _setActiveTopic } = useActiveTopic(activeAssistant?.id ?? '', state?.topic)
-  const [showAssistants] = usePreference('assistant.tab.show')
-  const [showTopics] = usePreference('topic.tab.show')
-  const [topicPosition] = usePreference('topic.position')
-  const { setShowAssistants, toggleShowAssistants } = useShowAssistants()
-  const { toggleShowTopics } = useShowTopics()
-  const dispatch = useDispatch()
+  const shouldUseDraft = !state?.topic && !isMessageOnlyView
 
-  _activeAssistant = activeAssistant
+  const setDraftAssistantSelectionState = useCallback((selection?: DraftAssistantSelection) => {
+    draftAssistantSelectionRef.current = selection ?? null
+    setDraftAssistantSelection(selection)
+  }, [])
 
-  // TODO: Replace with sidebar toggle logic once the new sidebar UI is implemented
-  useShortcut('general.toggle_sidebar', () => {
-    if (topicPosition === 'right') {
-      void toggleShowAssistants()
+  const { createTopic, refreshTopics } = useTopicMutations()
+  const {
+    assistants,
+    hasLoaded: hasAssistantsLoaded,
+    isLoading: isAssistantsLoading,
+    isRefreshing: isAssistantsRefreshing
+  } = useAssistants()
+  const assistantIdSet = useMemo(() => new Set(assistants.map((assistant) => assistant.id)), [assistants])
+  const validLastUsedAssistantId =
+    lastUsedAssistantId && assistantIdSet.has(lastUsedAssistantId) ? lastUsedAssistantId : undefined
+  const fallbackAssistantId = assistants[0]?.id
+  const isAssistantListResolved = hasAssistantsLoaded && !isAssistantsLoading && !isAssistantsRefreshing
+  const resolveDraftAssistantTarget = useCallback(
+    (explicitAssistantId?: string | null): ResolvedDraftAssistantSelection => {
+      if (explicitAssistantId && assistantIdSet.has(explicitAssistantId)) {
+        return { assistantId: explicitAssistantId, source: 'explicit' }
+      }
+      if (validLastUsedAssistantId) {
+        return { assistantId: validLastUsedAssistantId, source: 'last-used' }
+      }
+      if (fallbackAssistantId) {
+        return { assistantId: fallbackAssistantId, source: 'first-assistant' }
+      }
+      return { source: 'runtime-fallback' }
+    },
+    [assistantIdSet, fallbackAssistantId, validLastUsedAssistantId]
+  )
+
+  const initialTopic = useMemo<Topic | undefined>(() => {
+    if (isMessageOnlyView) return undefined
+    return state?.topic
+  }, [isMessageOnlyView, state?.topic])
+
+  const routeActiveTopicId = isMessageOnlyView ? null : (routeTopicId ?? tabMetadataTopicId ?? null)
+  const [activeTopicId, setActiveTopicId] = useState<string | null>(() => routeActiveTopicId)
+
+  useEffect(() => {
+    setActiveTopicId(routeActiveTopicId)
+  }, [routeActiveTopicId])
+
+  const {
+    activeTopic,
+    setActiveTopic,
+    isLoading: isActiveTopicLoading,
+    topicSource: activeTopicSource
+  } = useActiveTopic({
+    initialTopic,
+    activeTopicId,
+    setActiveTopicId,
+    // Message-only view loads its target via useTopicById; the active hook
+    // must not emit or expose a visible activeTopic.
+    passive: isMessageOnlyView
+  })
+  const lastVisibleTopicRef = useRef<Topic | undefined>(undefined)
+  const draftAssistantSelectionSnapshot = useMemo<DraftAssistantSelection | undefined>(() => {
+    if (isMessageOnlyView) return undefined
+    return draftAssistantSelection
+  }, [draftAssistantSelection, isMessageOnlyView])
+  const visibleTopic = isMessageOnlyView
+    ? routeTopic
+    : draftAssistantSelectionSnapshot
+      ? undefined
+      : (activeTopic ?? (isActiveTopicLoading ? lastVisibleTopicRef.current : undefined) ?? undefined)
+  const draftScopeKey = `home-draft:${draftScopeId}`
+
+  useEffect(() => {
+    if (!isAssistantListResolved || !lastUsedAssistantId || assistantIdSet.has(lastUsedAssistantId)) return
+    setLastUsedAssistantId(null)
+  }, [assistantIdSet, isAssistantListResolved, lastUsedAssistantId, setLastUsedAssistantId])
+
+  useEffect(() => {
+    const assistantId = activeTopic?.assistantId
+    if (assistantId) {
+      setLastUsedAssistantId(assistantId)
+    }
+  }, [activeTopic, setLastUsedAssistantId])
+
+  // All non-dormant tabs mount at once (Activity keep-alive), so each chat tab runs its
+  // own HomePage. `currentTabId` is *this* tab; the conversation-nav boundary uses it to
+  // exclude self when deduping. `useIsActiveTab` answers "am I the globally-focused tab".
+  const currentTabId = useCurrentTabId()
+  const conversationNav = useConversationNavigation('assistants')
+  const isActiveTab = useIsActiveTab()
+
+  const clearTopicRevealRequestAfterPaint = useCallback((requestId: number) => {
+    const clear = () => {
+      setTopicRevealRequest((current) => (current?.requestId === requestId ? undefined : current))
+    }
+
+    if (window.requestAnimationFrame) {
+      window.requestAnimationFrame(clear)
       return
     }
 
-    if (!showAssistants) {
-      void setShowAssistants(true)
-      requestAnimationFrame(() => {
-        void EventEmitter.emit(EVENT_NAMES.SHOW_ASSISTANTS)
-      })
-      return
-    }
+    window.setTimeout(clear, 0)
+  }, [])
 
-    void EventEmitter.emit(EVENT_NAMES.SHOW_ASSISTANTS)
+  const revealActiveTopicInResourceList = useEffectEvent(() => {
+    if (isMessageOnlyView || !visibleTopic?.id) return
+    const requestId = topicRevealRequestIdRef.current + 1
+    topicRevealRequestIdRef.current = requestId
+    setTopicRevealRequest({
+      itemId: visibleTopic.id,
+      requestId
+    })
+    clearTopicRevealRequestAfterPaint(requestId)
   })
 
-  useShortcut('topic.toggle_show_topics', () => {
-    if (topicPosition === 'right') {
-      void toggleShowTopics()
-      return
-    }
+  useEffect(() => {
+    const unsubscribe = EventEmitter.on(EVENT_NAMES.REVEAL_ACTIVE_RESOURCE_LIST, (payload) => {
+      const { source, tabId } = payload as ResourceListRevealPayload
+      if (source !== 'assistants' || tabId !== currentTabId) return
+      revealActiveTopicInResourceList()
+    })
 
-    if (!showAssistants) {
-      void setShowAssistants(true)
-      requestAnimationFrame(() => {
-        void EventEmitter.emit(EVENT_NAMES.SHOW_TOPIC_SIDEBAR)
-      })
-      return
-    }
+    return unsubscribe
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `useEffectEvent` reads the latest topic without resubscribing.
+  }, [currentTabId])
 
-    void EventEmitter.emit(EVENT_NAMES.SHOW_TOPIC_SIDEBAR)
+  useEffect(() => {
+    // Track "last focused topic" only for persisted topics — draft views have
+    // no stable topic id to restore on the next sidebar click. Drives
+    // the sidebar `assistants` dedupe key (mirror of agent's last_used_session).
+    // Gated on the active tab: `last_used` is a single global "what I'm looking
+    // at now", so background tabs (also mounted) must not clobber it.
+    if (!isActiveTab) return
+    if (activeTopic?.id && activeTopicSource === 'query') {
+      setLastUsedTopicId(activeTopic.id)
+    }
+  }, [isActiveTab, activeTopic, activeTopicSource, setLastUsedTopicId])
+
+  // Label this tab with its assistant emoji + topic name so multiple chat tabs
+  // are distinguishable in the tab bar (every tab labels itself — not gated on active).
+  const visibleAssistantId = visibleTopic?.assistantId ?? draftAssistantSelectionSnapshot?.assistantId
+  const { assistant: visibleAssistant } = useAssistantApiById(visibleAssistantId ?? undefined)
+  const isDraftView = !isMessageOnlyView && !!draftAssistantSelectionSnapshot
+  const tabInstanceTopicId =
+    !isMessageOnlyView && !isDraftView ? (visibleTopic?.id ?? routeActiveTopicId ?? undefined) : undefined
+  useTabSelfMetadata({
+    title: visibleTopic?.name?.trim() || visibleAssistant?.name?.trim() || getDefaultRouteTitle('/app/chat'),
+    emoji: visibleAssistant?.emoji,
+    instanceAppId: 'assistants',
+    instanceKey: tabInstanceTopicId ?? null
   })
 
-  const setActiveAssistant = useCallback(
-    (newAssistant: Assistant) => {
-      if (newAssistant.id === activeAssistant?.id) return
-      startTransition(() => {
-        _setActiveAssistant(newAssistant)
-        // 同步更新 active topic，避免不必要的重新渲染
-        const newTopic = newAssistant.topics[0]
-        _setActiveTopic((prev) => (newTopic?.id === prev.id ? prev : newTopic))
+  useEffect(() => {
+    if (activeTopic) lastVisibleTopicRef.current = activeTopic
+  }, [activeTopic])
+
+  useEffect(() => {
+    if (isMessageOnlyView) return
+    if (!activeTopic) return
+    const signature = `${activeTopic.id}:${activeTopic.name}`
+    if (lastRecordedRecentTopicRef.current === signature) return
+
+    lastRecordedRecentTopicRef.current = signature
+    setRecentItems((prev) => upsertGlobalSearchRecentEntry(prev ?? [], createRecentTopicEntryFromTopic(activeTopic)))
+  }, [activeTopic, isMessageOnlyView, setRecentItems])
+
+  const sendDraftMessage = useCallback(
+    async (text: string, options?: DraftChatSendOptions) => {
+      const current = draftAssistantSelectionRef.current
+      if (!current) {
+        throw new Error('Draft topic handoff failed: no active draft topic')
+      }
+
+      const topic = await createTopic({
+        ...(current.assistantId ? { assistantId: current.assistantId } : {})
       })
+      const ack = await ipcApi.request('ai.stream_open', {
+        trigger: 'submit-message',
+        topicId: topic.id,
+        userMessageParts: options?.userMessageParts ?? [{ type: 'text', text }],
+        mentionedModelIds: options?.mentionedModels
+      })
+      const rendererTopic = mapApiTopicToRendererTopic(topic)
+      setDraftAssistantSelectionState(undefined)
+      setActiveTopic(rendererTopic)
+      void refreshTopics().catch((err) => {
+        logger.warn('Failed to refresh topics after draft topic create', err as Error)
+      })
+      if (ack.mode === 'blocked') {
+        window.toast?.error(ack.message)
+      }
     },
-    [_setActiveTopic, activeAssistant?.id]
+    [createTopic, refreshTopics, setActiveTopic, setDraftAssistantSelectionState]
+  )
+  const setResourceListOpen = useCallback(
+    (open: boolean) => {
+      void setShowSidebar(open)
+    },
+    [setShowSidebar]
+  )
+  const toggleResourceListOpen = useCallback(() => {
+    if (isMessageOnlyView || isWindowFrame) return
+
+    if (effectiveShowSidebar) {
+      setResourceListOpen(false)
+      return
+    }
+
+    setResourceListOpen(true)
+    requestAnimationFrame(() => {
+      void EventEmitter.emit(EVENT_NAMES.SHOW_ASSISTANTS)
+    })
+  }, [effectiveShowSidebar, isMessageOnlyView, isWindowFrame, setResourceListOpen])
+  useCommandHandler('app.sidebar.toggle', toggleResourceListOpen)
+
+  useEffect(() => {
+    if (isMessageOnlyView) return
+    if (!state?.topic) return
+    setActiveTopic(state.topic)
+    setDraftAssistantSelectionState(undefined)
+  }, [isMessageOnlyView, setActiveTopic, setDraftAssistantSelectionState, state?.topic])
+
+  const startDraftAssistantSelection = useCallback(
+    (payload?: AddNewTopicPayload) => {
+      try {
+        const selection = resolveDraftAssistantTarget(payload?.assistantId)
+        const targetAssistantId = selection.assistantId
+        const current = draftAssistantSelectionRef.current
+
+        if (current && current.assistantId === targetAssistantId) {
+          setActiveTopicId(null)
+          return
+        }
+
+        setDraftAssistantSelectionState({ assistantId: targetAssistantId })
+        setActiveTopicId(null)
+      } catch (err) {
+        logger.error('Failed to start draft topic', err as Error)
+      }
+    },
+    [resolveDraftAssistantTarget, setDraftAssistantSelectionState]
   )
 
-  const setActiveTopic = useCallback(
-    (newTopic: Topic) => {
-      startTransition(() => {
-        _setActiveTopic((prev) => (newTopic?.id === prev.id ? prev : newTopic))
-        dispatch(newMessagesActions.setTopicFulfilled({ topicId: newTopic.id, fulfilled: false }))
-      })
+  const updateDraftAssistantSelection = useCallback(
+    (assistantId: string | null) => {
+      const current = draftAssistantSelectionRef.current
+      if (!assistantId || !current) return
+      if (assistantId === current.assistantId) return
+
+      setDraftAssistantSelectionState({ assistantId })
     },
-    [_setActiveTopic, dispatch]
+    [setDraftAssistantSelectionState]
   )
 
   useEffect(() => {
-    NavigationService.setNavigate(navigate)
-  }, [navigate])
+    if (!shouldUseDraft || draftAssistantStartStateRef.current.firstLaunchStarted || state?.topic) return
+    if (draftAssistantSelectionSnapshot || activeTopic || isActiveTopicLoading) return
+    if (!isAssistantListResolved) return
+
+    draftAssistantStartStateRef.current.firstLaunchStarted = true
+    startDraftAssistantSelection(routeAssistantId ? { assistantId: routeAssistantId } : undefined)
+  }, [
+    activeTopic,
+    draftAssistantSelectionSnapshot,
+    isActiveTopicLoading,
+    isAssistantListResolved,
+    routeAssistantId,
+    shouldUseDraft,
+    startDraftAssistantSelection,
+    state?.topic
+  ])
+
+  const setActiveTopicAndDiscardDraft = useCallback(
+    (topic: Topic) => {
+      // One tab per topic: if this topic is already open in another tab, focus
+      // that tab instead of navigating the current one (which would duplicate
+      // it in the tab bar). The current tab keeps its own topic untouched.
+      if (conversationNav.focusExistingTab(topic.id, { excludeTabId: currentTabId ?? undefined })) return false
+
+      if (draftAssistantSelectionRef.current) {
+        setDraftAssistantSelectionState(undefined)
+      }
+      setActiveTopic(topic)
+      return true
+    },
+    [conversationNav, currentTabId, setActiveTopic, setDraftAssistantSelectionState]
+  )
 
   useEffect(() => {
-    state?.assistant && setActiveAssistant(state?.assistant)
-    state?.topic && setActiveTopic(state?.topic)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state])
-
-  useEffect(() => {
-    const canMinimize = topicPosition == 'left' ? !showAssistants : !showAssistants && !showTopics
-    void window.api.window.setMinimumSize(canMinimize ? SECOND_MIN_WINDOW_WIDTH : MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+    void window.api.window.setMinimumSize(SECOND_MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
 
     return () => {
       void window.api.window.resetMinimumSize()
     }
-  }, [showAssistants, showTopics, topicPosition])
+  }, [])
+
+  const handleHistoryTopicSelect = useCallback(
+    (topic: Topic, messageId?: string) => {
+      if (!setActiveTopicAndDiscardDraft(topic)) return
+      setResourceListOpen(true)
+      setPendingLocateMessageId(messageId)
+      topicRevealRequestIdRef.current += 1
+      setTopicRevealRequest({
+        clearFilters: true,
+        clearQuery: true,
+        itemId: topic.id,
+        requestId: topicRevealRequestIdRef.current
+      })
+    },
+    [setActiveTopicAndDiscardDraft, setResourceListOpen]
+  )
+  const closeHistoryRecords = useCallback(() => {
+    setHistoryRecordsOpen(false)
+  }, [])
+  const openHistoryRecords = useCallback(() => {
+    setHistoryRecordsOpen(true)
+  }, [])
+  const handleHistoryRecordsTopicSelect = useCallback(
+    (topic: Topic | null) => {
+      closeHistoryRecords()
+      if (!topic) {
+        startDraftAssistantSelection()
+        return
+      }
+
+      handleHistoryTopicSelect(topic)
+    },
+    [closeHistoryRecords, handleHistoryTopicSelect, startDraftAssistantSelection]
+  )
+  const handleGlobalSearchTopicSelect = useEffectEvent((topic: Topic, messageId?: string) => {
+    handleHistoryTopicSelect(topic, messageId)
+  })
+
+  useEffect(() => {
+    const unsubscribe = EventEmitter.on(EVENT_NAMES.GLOBAL_SEARCH_SELECT_TOPIC, (topic) => {
+      handleGlobalSearchTopicSelect(topic as Topic)
+    })
+    const unsubscribeMessage = EventEmitter.on(EVENT_NAMES.GLOBAL_SEARCH_SELECT_TOPIC_MESSAGE, (payload) => {
+      const { messageId, topic } = payload as { messageId?: string; topic?: Topic }
+      if (!topic || !messageId) return
+
+      handleGlobalSearchTopicSelect(topic, messageId)
+    })
+
+    return () => {
+      unsubscribe()
+      unsubscribeMessage()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `useEffectEvent` reads latest tab/topic state without resubscribing.
+  }, [])
+
+  const handleLocateMessageHandled = useCallback(() => {
+    setPendingLocateMessageId(undefined)
+  }, [])
+
+  if (!visibleTopic && !draftAssistantSelectionSnapshot) {
+    if (isMessageOnlyView) {
+      return (
+        <Container id="home-page">
+          <ContentContainer>
+            <MessageOnlyStatus
+              loading={isRouteTopicLoading}
+              loadingLabel={t('common.loading')}
+              missingTitle={t('history.error.topic_not_found')}
+            />
+          </ContentContainer>
+        </Container>
+      )
+    }
+
+    return <Container id="home-page" />
+  }
+
+  const panePosition = 'left'
+  const pane = (
+    <HomeTabs
+      activeTopic={visibleTopic}
+      setActiveTopic={setActiveTopicAndDiscardDraft}
+      onNewTopic={isMessageOnlyView ? undefined : startDraftAssistantSelection}
+      onOpenHistoryRecords={openHistoryRecords}
+      revealRequest={topicRevealRequest}
+    />
+  )
+  const historyRecordsOverlay = (
+    <HistoryRecordsPage
+      mode="assistant"
+      open={historyRecordsOpen && !isMessageOnlyView && !isWindowFrame}
+      activeRecordId={activeTopicId}
+      onClose={closeHistoryRecords}
+      onRecordSelect={handleHistoryRecordsTopicSelect}
+    />
+  )
+
+  if (draftAssistantSelectionSnapshot) {
+    return (
+      <Container id="home-page">
+        <ContentContainer $detached={isWindowFrame}>
+          <DraftWelcomeChat
+            assistantId={draftAssistantSelectionSnapshot.assistantId}
+            scopeKey={draftScopeKey}
+            pane={pane}
+            paneOpen={effectiveShowSidebar}
+            panePosition={panePosition}
+            onPaneCollapse={() => setResourceListOpen(false)}
+            onNewTopic={isMessageOnlyView ? undefined : startDraftAssistantSelection}
+            onDraftAssistantChange={updateDraftAssistantSelection}
+            onSend={sendDraftMessage}
+            showResourceListControls={!isMessageOnlyView && !isWindowFrame}
+            sidebarOpen={effectiveShowSidebar}
+            onSidebarToggle={toggleResourceListOpen}
+            welcomeText={t('chat.home.welcome_title')}
+          />
+        </ContentContainer>
+        {historyRecordsOverlay}
+      </Container>
+    )
+  }
+
+  const chatTopic = visibleTopic
+  if (!chatTopic) return <Container id="home-page" />
 
   return (
     <Container id="home-page">
-      {isLeftNavbar && (
-        <Navbar
-          activeAssistant={activeAssistant}
-          activeTopic={activeTopic}
-          setActiveTopic={setActiveTopic}
-          setActiveAssistant={setActiveAssistant}
-          position="left"
+      <ContentContainer $detached={isWindowFrame}>
+        <Chat
+          activeTopic={chatTopic}
+          pane={pane}
+          paneOpen={effectiveShowSidebar}
+          panePosition={panePosition}
+          onPaneCollapse={() => setResourceListOpen(false)}
+          onNewTopic={isMessageOnlyView ? undefined : startDraftAssistantSelection}
+          showResourceListControls={!isMessageOnlyView && !isWindowFrame}
+          sidebarOpen={effectiveShowSidebar}
+          onSidebarToggle={toggleResourceListOpen}
+          locateMessageId={pendingLocateMessageId}
+          onLocateMessageHandled={handleLocateMessageHandled}
         />
-      )}
-      <ContentContainer id={isLeftNavbar ? 'content-container' : undefined}>
-        <AnimatePresence initial={false}>
-          {showAssistants && (
-            <ErrorBoundary>
-              <motion.div
-                initial={{ width: 0, opacity: 0 }}
-                animate={{ width: 'var(--assistants-width)', opacity: 1 }}
-                exit={{ width: 0, opacity: 0 }}
-                transition={{ duration: 0.3, ease: 'easeInOut' }}
-                style={{ overflow: 'hidden' }}>
-                <HomeTabs
-                  activeAssistant={activeAssistant}
-                  activeTopic={activeTopic}
-                  setActiveAssistant={setActiveAssistant}
-                  setActiveTopic={setActiveTopic}
-                  position="left"
-                />
-              </motion.div>
-            </ErrorBoundary>
-          )}
-        </AnimatePresence>
-        <ErrorBoundary>
-          <Chat
-            assistant={activeAssistant}
-            activeTopic={activeTopic}
-            setActiveTopic={setActiveTopic}
-            setActiveAssistant={setActiveAssistant}
-          />
-        </ErrorBoundary>
       </ContentContainer>
+      {historyRecordsOverlay}
     </Container>
   )
 }
 
-const Container = styled.div`
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-  [navbar-position='left'] & {
-    max-width: calc(100vw - var(--sidebar-width));
-  }
-  [navbar-position='top'] & {
-    max-width: 100vw;
-  }
-`
+type DraftWelcomeChatProps = {
+  assistantId?: string
+  scopeKey: string
+  pane?: ReactNode
+  paneOpen?: boolean
+  panePosition?: ChatPanePosition
+  onPaneCollapse?: () => void
+  onNewTopic?: (payload?: AddNewTopicPayload) => void | Promise<void>
+  onDraftAssistantChange?: (assistantId: string | null) => void | Promise<void>
+  onSend: (text: string, options?: DraftChatSendOptions) => Promise<void>
+  showResourceListControls?: boolean
+  sidebarOpen?: boolean
+  onSidebarToggle?: () => void
+  welcomeText: string
+}
 
-const ContentContainer = styled.div`
-  display: flex;
-  flex: 1;
-  flex-direction: row;
-  min-height: 0;
-  overflow: hidden;
+function DraftWelcomeChat({
+  assistantId,
+  scopeKey,
+  pane,
+  paneOpen,
+  panePosition,
+  onPaneCollapse,
+  onNewTopic,
+  onDraftAssistantChange,
+  onSend,
+  showResourceListControls,
+  sidebarOpen,
+  onSidebarToggle,
+  welcomeText
+}: DraftWelcomeChatProps) {
+  const [messageStyle] = usePreference('chat.message.style')
 
-  [navbar-position='top'] & {
-    max-width: calc(100vw - 12px);
-  }
-`
+  const composer = (
+    <ChatHomePlacementComposer
+      scopeKey={scopeKey}
+      assistantId={assistantId}
+      onSend={onSend}
+      onDraftAssistantChange={onDraftAssistantChange}
+      onNewTopic={onNewTopic}
+    />
+  )
+
+  return (
+    <ConversationShell
+      id="chat"
+      className={messageStyle}
+      pane={pane}
+      paneOpen={paneOpen}
+      panePosition={panePosition}
+      onPaneCollapse={onPaneCollapse}
+      topBar={
+        <ChatNavbar
+          showSidebarControls={showResourceListControls}
+          sidebarOpen={sidebarOpen}
+          onSidebarToggle={onSidebarToggle}
+        />
+      }
+      center={
+        <ConversationStageCenter placement="home" main={null} composer={composer} homeWelcomeText={welcomeText} />
+      }
+      centerId="chat-main"
+      centerClassName="transform-[translateZ(0)] relative justify-between"
+    />
+  )
+}
+
+type MessageOnlyStatusProps = {
+  loading: boolean
+  loadingLabel: string
+  missingTitle: string
+}
+
+function MessageOnlyStatus({ loading, loadingLabel, missingTitle }: MessageOnlyStatusProps) {
+  return (
+    <div className="flex h-[calc(100vh_-_var(--navbar-height)_-_6px)] flex-1 overflow-hidden rounded-tl-[10px] rounded-bl-[10px] bg-background">
+      <ChatAppShell
+        centerContent={
+          <div className="flex h-full min-h-0 flex-1 items-center justify-center px-6">
+            {loading ? <LoadingState label={loadingLabel} /> : <EmptyState compact title={missingTitle} />}
+          </div>
+        }
+      />
+    </div>
+  )
+}
+
+function Container({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn('relative flex max-w-[100vw] flex-1 flex-col overflow-hidden', className)} {...props} />
+}
+
+function ContentContainer({
+  $detached,
+  className,
+  ...props
+}: HTMLAttributes<HTMLDivElement> & { $detached?: boolean }) {
+  return (
+    <div
+      className={cn(
+        'flex min-h-0 flex-1 overflow-hidden',
+        $detached ? 'max-w-[100vw]' : 'max-w-[calc(100vw_-_12px)]',
+        className
+      )}
+      {...props}
+    />
+  )
+}
 
 export default HomePage

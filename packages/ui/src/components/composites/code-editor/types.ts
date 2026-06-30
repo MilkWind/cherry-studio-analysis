@@ -16,6 +16,8 @@ export interface CodeEditorHandles {
   save?: () => void
   scrollToLine?: (lineNumber: number, options?: { highlight?: boolean }) => void
   getContent?: () => string
+  insertText?: (text: string) => boolean
+  focus?: () => void
 }
 
 export interface CodeEditorProps {

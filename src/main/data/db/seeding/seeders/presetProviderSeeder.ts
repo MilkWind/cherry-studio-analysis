@@ -59,8 +59,7 @@ function toDbRow(p: ProtoProviderConfig) {
         streamOptions: p.apiFeatures.streamOptions,
         developerRole: p.apiFeatures.developerRole,
         serviceTier: p.apiFeatures.serviceTier,
-        verbosity: p.apiFeatures.verbosity,
-        enableThinking: p.apiFeatures.enableThinking
+        verbosity: p.apiFeatures.verbosity
       }
     : null
 
@@ -107,19 +106,6 @@ export class PresetProviderSeeder implements ISeeder {
     if (rawProviders.length === 0) return
 
     const rows = rawProviders.map(toDbRow)
-    rows.push({
-      providerId: 'cherryai',
-      presetProviderId: 'cherryai',
-      name: 'CherryAI',
-      endpointConfigs: {
-        [ENDPOINT_TYPE.OPENAI_CHAT_COMPLETIONS]: {
-          baseUrl: 'https://api.cherry-ai.com'
-        }
-      },
-      defaultChatEndpoint: ENDPOINT_TYPE.OPENAI_CHAT_COMPLETIONS,
-      authConfig: null,
-      apiFeatures: null
-    })
 
     await db.transaction((tx) => providerService.batchUpsertTx(tx, rows))
   }

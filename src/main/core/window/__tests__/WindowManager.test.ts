@@ -1,7 +1,16 @@
+import { application } from '@application'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { BaseService } from '../../lifecycle/BaseService'
 import { type Disposable } from '../../lifecycle/event'
+
+/**
+ * Directed main→renderer window events (reused / maximized_changed / fullscreen_changed) now
+ * flow through `application.get('IpcApiService').send(windowId, event, payload)` instead of the
+ * legacy `webContents.send(channel, payload)`. The unified @application mock routes that to a
+ * stable spy — this returns it so tests assert the (windowId, event, payload) triple.
+ */
+const ipcSend = () => vi.mocked(application.get('IpcApiService').send)
 
 // ─── Deterministic UUIDs ────────────────────────────────────
 
@@ -23,6 +32,7 @@ vi.mock('@main/core/platform', () => ({
 
 interface MockBrowserWindow {
   id: number
+  constructorOptions?: Record<string, unknown>
   show: ReturnType<typeof vi.fn>
   hide: ReturnType<typeof vi.fn>
   focus: ReturnType<typeof vi.fn>
@@ -38,6 +48,8 @@ interface MockBrowserWindow {
   isFullScreen: ReturnType<typeof vi.fn>
   isVisible: ReturnType<typeof vi.fn>
   isFocused: ReturnType<typeof vi.fn>
+  getNormalBounds: ReturnType<typeof vi.fn>
+  getBounds: ReturnType<typeof vi.fn>
   setFullScreen: ReturnType<typeof vi.fn>
   setBounds: ReturnType<typeof vi.fn>
   setContentBounds: ReturnType<typeof vi.fn>
@@ -80,6 +92,8 @@ function createMockBrowserWindow(): MockBrowserWindow {
     isFullScreen: vi.fn(() => false),
     isVisible: vi.fn(() => true),
     isFocused: vi.fn(() => false),
+    getNormalBounds: vi.fn(() => ({ x: 0, y: 0, width: 1100, height: 720 })),
+    getBounds: vi.fn(() => ({ x: 0, y: 0, width: 1100, height: 720 })),
     setFullScreen: vi.fn(),
     setBounds: vi.fn(),
     setContentBounds: vi.fn(),
@@ -131,8 +145,9 @@ const createdWindows: MockBrowserWindow[] = []
 
 vi.mock('electron', () => {
   class BrowserWindowMock {
-    constructor() {
+    constructor(opts?: Record<string, unknown>) {
       const win = createMockBrowserWindow()
+      win.constructorOptions = opts
       createdWindows.push(win)
       return win as never
     }
@@ -148,6 +163,10 @@ vi.mock('electron', () => {
     screen: {
       getCursorScreenPoint: vi.fn(() => ({ x: 0, y: 0 })),
       getDisplayNearestPoint: vi.fn(() => ({
+        bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+        workArea: { x: 0, y: 0, width: 1920, height: 1040 }
+      })),
+      getDisplayMatching: vi.fn(() => ({
         bounds: { x: 0, y: 0, width: 1920, height: 1080 },
         workArea: { x: 0, y: 0, width: 1920, height: 1040 }
       }))
@@ -242,6 +261,21 @@ vi.mock('../windowRegistry', () => {
       showMode: 'manual',
       htmlPath: 'windows/singletonHidden/index.html',
       windowOptions: {}
+    },
+    singletonRemember: {
+      type: 'singletonRemember',
+      lifecycle: 'singleton',
+      showMode: 'manual',
+      rememberBounds: true,
+      htmlPath: 'windows/singletonRemember/index.html',
+      windowOptions: { width: 1100, height: 720 }
+    },
+    nonSingletonRemember: {
+      type: 'nonSingletonRemember',
+      lifecycle: 'default',
+      rememberBounds: true,
+      htmlPath: 'windows/nonSingletonRemember/index.html',
+      windowOptions: { width: 1100, height: 720 }
     },
     singletonEagerWarmup: {
       type: 'singletonEagerWarmup',
@@ -548,7 +582,7 @@ describe('WindowManager', () => {
 
         wm.setInitData(id, { preserved: true })
         win.emit('close', { preventDefault: vi.fn() })
-        win.webContents.send.mockClear()
+        ipcSend().mockClear()
 
         // Re-open without args.
         const id2 = wm.open('singletonRetention' as never)
@@ -557,7 +591,7 @@ describe('WindowManager', () => {
         // initData preserved across hide — not cleared by applyReusedInitData(undefined).
         expect(wm.getInitData(id2)).toEqual({ preserved: true })
         // No Reused event because no new initData was supplied.
-        const reusedCalls = win.webContents.send.mock.calls.filter((c) => c[0] === 'window-manager:reused')
+        const reusedCalls = ipcSend().mock.calls.filter((c) => c[0] === id && c[1] === 'window.reused')
         expect(reusedCalls).toHaveLength(0)
       })
 
@@ -565,12 +599,12 @@ describe('WindowManager', () => {
         const id = wm.open('singletonRetention' as never)
         const win = createdWindows[createdWindows.length - 1]
         win.emit('close', { preventDefault: vi.fn() })
-        win.webContents.send.mockClear()
+        ipcSend().mockClear()
 
         const payload = { foo: 'bar' }
         wm.open('singletonRetention' as never, { initData: payload })
 
-        expect(win.webContents.send).toHaveBeenCalledWith('window-manager:reused', payload)
+        expect(ipcSend()).toHaveBeenCalledWith(id, 'window.reused', payload)
         expect(wm.getInitData(id)).toEqual(payload)
       })
 
@@ -689,9 +723,7 @@ describe('WindowManager', () => {
 
         expect(id2).toBe(id1)
         // No initData → no Reused event. Empty Reused events are a dormant foot-gun.
-        const reusedCalls = createdWindows[0].webContents.send.mock.calls.filter(
-          (call) => call[0] === 'window-manager:reused'
-        )
+        const reusedCalls = ipcSend().mock.calls.filter((call) => call[0] === id2 && call[1] === 'window.reused')
         expect(reusedCalls).toHaveLength(0)
         expect(createdWindows).toHaveLength(1)
       })
@@ -704,7 +736,7 @@ describe('WindowManager', () => {
         const id2 = wm.open('pooled' as never, { initData: data })
 
         expect(id2).toBe(id1)
-        expect(createdWindows[0].webContents.send).toHaveBeenCalledWith('window-manager:reused', data)
+        expect(ipcSend()).toHaveBeenCalledWith(id2, 'window.reused', data)
         // And the init-data store must be readable synchronously after open() returns.
         expect(wm.getInitData(id2)).toEqual(data)
         expect(createdWindows).toHaveLength(1)
@@ -1279,79 +1311,82 @@ describe('WindowManager', () => {
   // ─── Window state forwarding (OS events → renderer) ────
 
   describe('window state forwarding', () => {
-    it("forwards BrowserWindow 'maximize' event to webContents.send(MaximizedChanged, true)", () => {
-      wm.open('default' as never)
+    it("forwards BrowserWindow 'maximize' event to a directed window.maximized_changed(true)", () => {
+      const id = wm.open('default' as never)
       const win = createdWindows[0]
-      win.webContents.send.mockClear()
+      ipcSend().mockClear()
 
       win.emit('maximize')
 
-      expect(win.webContents.send).toHaveBeenCalledWith('window-manager:maximized-changed', true)
+      expect(ipcSend()).toHaveBeenCalledWith(id, 'window.maximized_changed', true)
     })
 
-    it("forwards BrowserWindow 'unmaximize' event to webContents.send(MaximizedChanged, false)", () => {
-      wm.open('default' as never)
+    it("forwards BrowserWindow 'unmaximize' event to a directed window.maximized_changed(false)", () => {
+      const id = wm.open('default' as never)
       const win = createdWindows[0]
-      win.webContents.send.mockClear()
+      ipcSend().mockClear()
 
       win.emit('unmaximize')
 
-      expect(win.webContents.send).toHaveBeenCalledWith('window-manager:maximized-changed', false)
+      expect(ipcSend()).toHaveBeenCalledWith(id, 'window.maximized_changed', false)
     })
 
-    it("forwards BrowserWindow 'enter-full-screen' event to webContents.send(FullscreenChanged, true)", () => {
-      wm.open('default' as never)
+    it("forwards BrowserWindow 'enter-full-screen' event to a directed window.fullscreen_changed(true)", () => {
+      const id = wm.open('default' as never)
       const win = createdWindows[0]
-      win.webContents.send.mockClear()
+      ipcSend().mockClear()
 
       win.emit('enter-full-screen')
 
-      expect(win.webContents.send).toHaveBeenCalledWith('window-manager:fullscreen-changed', true)
+      expect(ipcSend()).toHaveBeenCalledWith(id, 'window.fullscreen_changed', true)
     })
 
-    it("forwards BrowserWindow 'leave-full-screen' event to webContents.send(FullscreenChanged, false)", () => {
-      wm.open('default' as never)
+    it("forwards BrowserWindow 'leave-full-screen' event to a directed window.fullscreen_changed(false)", () => {
+      const id = wm.open('default' as never)
       const win = createdWindows[0]
-      win.webContents.send.mockClear()
+      ipcSend().mockClear()
 
       win.emit('leave-full-screen')
 
-      expect(win.webContents.send).toHaveBeenCalledWith('window-manager:fullscreen-changed', false)
+      expect(ipcSend()).toHaveBeenCalledWith(id, 'window.fullscreen_changed', false)
     })
 
     it('only forwards events to the originating window (no cross-window leakage)', () => {
-      wm.open('default' as never)
-      wm.open('default' as never)
-      const [winA, winB] = createdWindows
-      winA.webContents.send.mockClear()
-      winB.webContents.send.mockClear()
+      const idA = wm.open('default' as never)
+      const idB = wm.open('default' as never)
+      const [winA] = createdWindows
+      ipcSend().mockClear()
 
       winA.emit('maximize')
 
-      expect(winA.webContents.send).toHaveBeenCalledWith('window-manager:maximized-changed', true)
-      expect(winB.webContents.send).not.toHaveBeenCalledWith('window-manager:maximized-changed', expect.anything())
+      expect(ipcSend()).toHaveBeenCalledWith(idA, 'window.maximized_changed', true)
+      expect(ipcSend()).not.toHaveBeenCalledWith(idB, 'window.maximized_changed', expect.anything())
     })
   })
 
   // ─── Queries ───────────────────────────────────────────
 
   describe('queries', () => {
-    it('getAllWindows() returns all managed windows', () => {
-      wm.open('default' as never)
-      wm.open('singleton' as never)
-      wm.open('pooled' as never)
-
-      const all = wm.getAllWindows()
-      expect(all).toHaveLength(3)
-    })
-
-    it('getWindowsByType() filters by type', () => {
-      wm.open('default' as never)
-      wm.open('default' as never)
+    it('getWindowsByType() returns live BrowserWindow instances filtered by type', () => {
+      const id1 = wm.open('default' as never)
+      const id2 = wm.open('default' as never)
       wm.open('singleton' as never)
 
       const defaults = wm.getWindowsByType('default' as never)
       expect(defaults).toHaveLength(2)
+      expect(defaults[0]).toBe(wm.getWindow(id1))
+      expect(defaults[1]).toBe(wm.getWindow(id2))
+    })
+
+    it('getWindowsByType() skips destroyed windows', () => {
+      const id1 = wm.open('default' as never)
+      const id2 = wm.open('default' as never)
+      const w1 = wm.getWindow(id1) as unknown as MockBrowserWindow
+      w1.isDestroyed.mockReturnValue(true)
+
+      const remaining = wm.getWindowsByType('default' as never)
+      expect(remaining).toHaveLength(1)
+      expect(remaining[0]).toBe(wm.getWindow(id2))
     })
 
     it('getWindowInfo() returns serializable info', () => {
@@ -1366,6 +1401,22 @@ describe('WindowManager', () => {
         isFocused: false
       })
       expect(info?.createdAt).toBeGreaterThan(0)
+    })
+
+    it('getWindowInfosByType() returns serializable info filtered by type', () => {
+      wm.open('default' as never)
+      wm.open('default' as never)
+      wm.open('singleton' as never)
+
+      const infos = wm.getWindowInfosByType('default' as never)
+      expect(infos).toHaveLength(2)
+      expect(infos[0]).toMatchObject({
+        type: 'default',
+        title: 'Test Window',
+        isVisible: true,
+        isFocused: false
+      })
+      expect(infos[0]).not.toHaveProperty('window')
     })
 
     it('count reflects current managed window count', () => {
@@ -1424,13 +1475,12 @@ describe('WindowManager', () => {
 
         wm.close(firstId) // pool release clears init data
 
-        const win = createdWindows[0]
-        win.webContents.send.mockClear()
+        ipcSend().mockClear()
 
         const secondId = wm.open('pooled' as never, { initData: { version: 2 } })
         expect(secondId).toBe(firstId) // recycled
         expect(wm.getInitData(secondId)).toEqual({ version: 2 })
-        expect(win.webContents.send).toHaveBeenCalledWith('window-manager:reused', { version: 2 })
+        expect(ipcSend()).toHaveBeenCalledWith(secondId, 'window.reused', { version: 2 })
       })
 
       it('fresh window paths do not fire Reused (pooled new / singleton first / default / create)', () => {
@@ -1448,34 +1498,31 @@ describe('WindowManager', () => {
         expect(wm.getInitData(c)).toEqual({ c: 3 })
         expect(wm.getInitData(d)).toEqual({ d: 4 })
 
-        for (const win of createdWindows) {
-          const reusedCalls = win.webContents.send.mock.calls.filter((call) => call[0] === 'window-manager:reused')
-          expect(reusedCalls).toHaveLength(0)
-        }
+        // Fresh paths must never emit a reused event for any window.
+        const reusedCalls = ipcSend().mock.calls.filter((call) => call[1] === 'window.reused')
+        expect(reusedCalls).toHaveLength(0)
       })
     })
 
     describe('open({ initData }) — singleton reuse', () => {
       it('fires Reused event with new initData on singleton re-open', () => {
         const id1 = wm.open('singleton' as never, { initData: { version: 1 } })
-        const win = createdWindows[0]
-        win.webContents.send.mockClear()
+        ipcSend().mockClear()
 
         const id2 = wm.open('singleton' as never, { initData: { version: 2 } })
 
         expect(id2).toBe(id1)
         expect(wm.getInitData(id2)).toEqual({ version: 2 })
-        expect(win.webContents.send).toHaveBeenCalledWith('window-manager:reused', { version: 2 })
+        expect(ipcSend()).toHaveBeenCalledWith(id2, 'window.reused', { version: 2 })
       })
 
       it('does NOT fire Reused on singleton re-open when no initData provided', () => {
         wm.open('singleton' as never)
-        const win = createdWindows[0]
-        win.webContents.send.mockClear()
+        ipcSend().mockClear()
 
         wm.open('singleton' as never)
 
-        const reusedCalls = win.webContents.send.mock.calls.filter((call) => call[0] === 'window-manager:reused')
+        const reusedCalls = ipcSend().mock.calls.filter((call) => call[1] === 'window.reused')
         expect(reusedCalls).toHaveLength(0)
       })
 
@@ -1575,15 +1622,14 @@ describe('WindowManager', () => {
   describe('pushInitData', () => {
     it('writes init-data store and sends Reused event to the target window', () => {
       const id = wm.open('default' as never)
-      const win = createdWindows[0]
-      win.webContents.send.mockClear()
+      ipcSend().mockClear()
 
       const payload = { v: 2, kind: 'refresh' }
       const result = wm.pushInitData(id, payload)
 
       expect(result).toBe(true)
       expect(wm.getInitData(id)).toEqual(payload)
-      expect(win.webContents.send).toHaveBeenCalledWith('window-manager:reused', payload)
+      expect(ipcSend()).toHaveBeenCalledWith(id, 'window.reused', payload)
     })
 
     it('returns false and does not send when window does not exist', () => {
@@ -1595,28 +1641,26 @@ describe('WindowManager', () => {
       const id = wm.open('default' as never)
       const win = createdWindows[0]
       win.isDestroyed.mockReturnValue(true)
-      win.webContents.send.mockClear()
+      ipcSend().mockClear()
 
       const result = wm.pushInitData(id, { v: 3 })
 
       expect(result).toBe(false)
-      expect(win.webContents.send).not.toHaveBeenCalled()
+      expect(ipcSend()).not.toHaveBeenCalled()
     })
   })
 
   describe('pushInitDataToType', () => {
     it('pushes to every live window of the given type and returns the count', () => {
       const ids = [wm.open('pooled' as never), wm.open('pooled' as never), wm.open('pooled' as never)]
-      for (const win of createdWindows) win.webContents.send.mockClear()
+      ipcSend().mockClear()
 
       const payload = { broadcast: true }
       const count = wm.pushInitDataToType('pooled' as never, payload)
 
       expect(count).toBe(3)
-      for (const win of createdWindows) {
-        expect(win.webContents.send).toHaveBeenCalledWith('window-manager:reused', payload)
-      }
       for (const id of ids) {
+        expect(ipcSend()).toHaveBeenCalledWith(id, 'window.reused', payload)
         expect(wm.getInitData(id)).toEqual(payload)
       }
     })
@@ -1627,16 +1671,16 @@ describe('WindowManager', () => {
     })
 
     it('skips destroyed windows in the count and does not send to them', () => {
-      wm.open('pooled' as never)
-      wm.open('pooled' as never)
+      const id0 = wm.open('pooled' as never)
+      const id1 = wm.open('pooled' as never)
       createdWindows[0].isDestroyed.mockReturnValue(true)
-      for (const win of createdWindows) win.webContents.send.mockClear()
+      ipcSend().mockClear()
 
       const count = wm.pushInitDataToType('pooled' as never, { v: 9 })
 
       expect(count).toBe(1)
-      expect(createdWindows[0].webContents.send).not.toHaveBeenCalled()
-      expect(createdWindows[1].webContents.send).toHaveBeenCalledWith('window-manager:reused', { v: 9 })
+      expect(ipcSend()).not.toHaveBeenCalledWith(id0, 'window.reused', expect.anything())
+      expect(ipcSend()).toHaveBeenCalledWith(id1, 'window.reused', { v: 9 })
     })
   })
 
@@ -1653,6 +1697,153 @@ describe('WindowManager', () => {
       expect(createdWindows[0].destroy).toHaveBeenCalled()
       expect(createdWindows[1].destroy).toHaveBeenCalled()
       expect(createdWindows[2].destroy).toHaveBeenCalled()
+    })
+  })
+
+  // ─── Bounds persistence (rememberBounds) ───────────────
+  //
+  // The unified @application mock backs getPersist/setPersist with a module-level
+  // map that survives across tests, so reset window.bounds before each case.
+  describe('bounds persistence (rememberBounds)', () => {
+    const cache = () => application.get('CacheService')
+
+    const savedRect = (overrides: Record<string, unknown> = {}) => ({
+      x: 200,
+      y: 150,
+      width: 1000,
+      height: 700,
+      isMaximized: false,
+      displayBounds: { x: 0, y: 0, width: 1920, height: 1080 },
+      ...overrides
+    })
+
+    beforeEach(() => {
+      cache().setPersist('window.bounds', {})
+    })
+
+    it('injects saved bounds into the constructor options on open (singleton + rememberBounds)', () => {
+      cache().setPersist('window.bounds', { singletonRemember: savedRect() })
+
+      wm.open('singletonRemember' as never)
+
+      expect(createdWindows[0].constructorOptions).toMatchObject({ x: 200, y: 150, width: 1000, height: 700 })
+    })
+
+    it('does not inject for a non-singleton type that declares rememberBounds', () => {
+      cache().setPersist('window.bounds', { nonSingletonRemember: savedRect() })
+
+      wm.open('nonSingletonRemember' as never)
+
+      // The gate ignores the flag for non-singletons. The dev-warn branch is NOT
+      // exercised here because this suite mocks `isDev: false` (see top of file),
+      // which suppresses the warning; this asserts only the behavioral outcome.
+      expect(createdWindows[0].constructorOptions?.x).toBeUndefined()
+      expect(createdWindows[0].constructorOptions?.y).toBeUndefined()
+    })
+
+    it('persists bounds on native close while the window is still alive', () => {
+      wm.open('singletonRemember' as never)
+      const win = createdWindows[0]
+      win.getNormalBounds.mockReturnValue({ x: 300, y: 250, width: 900, height: 650 })
+      vi.mocked(cache().setPersist).mockClear()
+
+      win.emit('close')
+
+      expect(cache().setPersist).toHaveBeenCalledWith(
+        'window.bounds',
+        expect.objectContaining({
+          singletonRemember: expect.objectContaining({ x: 300, y: 250, width: 900, height: 650, isMaximized: false })
+        })
+      )
+    })
+
+    it('persists bounds on programmatic destroy via wm.close (the close event is skipped)', () => {
+      const id = wm.open('singletonRemember' as never)
+      const win = createdWindows[0]
+      win.getNormalBounds.mockReturnValue({ x: 111, y: 222, width: 800, height: 600 })
+      // destroy() flips isDestroyed so the capture-BEFORE-destroy ordering is actually
+      // guarded: persistNow early-returns on a destroyed window, so this assertion would
+      // fail if destroyWindow ever persisted after window.destroy().
+      win.destroy.mockImplementation(() => win.isDestroyed.mockReturnValue(true))
+      vi.mocked(cache().setPersist).mockClear()
+
+      wm.close(id)
+
+      expect(win.destroy).toHaveBeenCalled()
+      expect(cache().setPersist).toHaveBeenCalledWith(
+        'window.bounds',
+        expect.objectContaining({
+          singletonRemember: expect.objectContaining({ x: 111, y: 222, width: 800, height: 600 })
+        })
+      )
+    })
+
+    it('persists bounds for still-alive windows on service stop (before CacheService teardown)', async () => {
+      wm.open('singletonRemember' as never)
+      const win = createdWindows[0]
+      win.getNormalBounds.mockReturnValue({ x: 1, y: 2, width: 1280, height: 800 })
+      vi.mocked(cache().setPersist).mockClear()
+
+      await wm._doStop()
+
+      expect(cache().setPersist).toHaveBeenCalledWith(
+        'window.bounds',
+        expect.objectContaining({
+          singletonRemember: expect.objectContaining({ x: 1, y: 2, width: 1280, height: 800 })
+        })
+      )
+    })
+
+    it('does not persist on close for a singleton without rememberBounds', () => {
+      wm.open('singletonHidden' as never)
+      const win = createdWindows[0]
+      vi.mocked(cache().setPersist).mockClear()
+
+      win.emit('close')
+
+      expect(cache().setPersist).not.toHaveBeenCalled()
+    })
+
+    describe('setRememberBounds runtime toggle', () => {
+      it('OFF drops the saved record (keeping other types) and stops persisting', () => {
+        cache().setPersist('window.bounds', { singletonRemember: savedRect(), singletonHidden: savedRect() })
+        vi.mocked(cache().setPersist).mockClear()
+
+        wm.setRememberBounds('singletonRemember' as never, false)
+
+        expect(cache().setPersist).toHaveBeenCalledWith('window.bounds', { singletonHidden: savedRect() })
+
+        // A subsequent open + close must not re-persist.
+        wm.open('singletonRemember' as never)
+        const win = createdWindows[0]
+        vi.mocked(cache().setPersist).mockClear()
+        win.emit('close')
+        expect(cache().setPersist).not.toHaveBeenCalled()
+      })
+
+      it('ON enables persistence for a singleton that has no registry flag', () => {
+        wm.setRememberBounds('singletonHidden' as never, true)
+        wm.open('singletonHidden' as never)
+        const win = createdWindows[0]
+        win.getNormalBounds.mockReturnValue({ x: 7, y: 8, width: 640, height: 480 })
+        vi.mocked(cache().setPersist).mockClear()
+
+        win.emit('close')
+
+        expect(cache().setPersist).toHaveBeenCalledWith(
+          'window.bounds',
+          expect.objectContaining({
+            singletonHidden: expect.objectContaining({ x: 7, y: 8, width: 640, height: 480 })
+          })
+        )
+      })
+
+      it('peekWindowBounds returns the saved record without restoring it', () => {
+        const saved = savedRect({ isMaximized: true })
+        cache().setPersist('window.bounds', { singletonRemember: saved })
+
+        expect(wm.peekWindowBounds('singletonRemember' as never)).toEqual(saved)
+      })
     })
   })
 })

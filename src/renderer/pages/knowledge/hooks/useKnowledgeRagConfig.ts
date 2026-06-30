@@ -1,10 +1,9 @@
 import { useMutation } from '@data/hooks/useDataApi'
+import { usePreference } from '@data/hooks/usePreference'
 import { loggerService } from '@logger'
-import { useModels } from '@renderer/hooks/useModels'
-import { getFileProcessorLabel } from '@renderer/i18n/label'
-import { PRESETS_FILE_PROCESSORS } from '@shared/data/presets/file-processing'
+import { getFileProcessorLabelKey } from '@renderer/i18n/label'
+import { PRESETS_FILE_PROCESSORS } from '@shared/data/presets/fileProcessing'
 import type { KnowledgeBase } from '@shared/data/types/knowledge'
-import { isUniqueModelId, MODEL_CAPABILITY, parseUniqueModelId } from '@shared/data/types/model'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -19,25 +18,17 @@ const KNOWLEDGE_V2_FILE_PROCESSORS = PRESETS_FILE_PROCESSORS.filter((preset) =>
   )
 )
 
-const formatModelOptionLabel = (uniqueModelId: string) => {
-  if (!isUniqueModelId(uniqueModelId)) {
-    return uniqueModelId
-  }
-
-  const { providerId, modelId } = parseUniqueModelId(uniqueModelId)
-  return `${modelId} · ${providerId}`
+type FileProcessorApiKeyState = {
+  type: (typeof PRESETS_FILE_PROCESSORS)[number]['type']
+  apiKeys?: readonly string[]
 }
+
+const hasConfiguredApiKey = (processor: FileProcessorApiKeyState) =>
+  processor.type !== 'api' || processor.apiKeys?.some((key) => key.trim().length > 0) === true
 
 export const useKnowledgeRagConfig = (base: KnowledgeBase) => {
   const { t } = useTranslation()
-  const { models: embeddingModels } = useModels({
-    capability: MODEL_CAPABILITY.EMBEDDING,
-    enabled: true
-  })
-  const { models: rerankModels } = useModels({
-    capability: MODEL_CAPABILITY.RERANK,
-    enabled: true
-  })
+  const [fileProcessorOverrides] = usePreference('feature.file_processing.overrides')
   const { trigger, isLoading, error } = useMutation('PATCH', '/knowledge-bases/:id', {
     refresh: ['/knowledge-bases']
   })
@@ -45,30 +36,25 @@ export const useKnowledgeRagConfig = (base: KnowledgeBase) => {
   const initialValues = useMemo(() => createKnowledgeRagConfigFormValues(base), [base])
 
   const fileProcessorOptions = useMemo(() => {
-    return KNOWLEDGE_V2_FILE_PROCESSORS.map((processor) => ({
-      value: processor.id,
-      label: getFileProcessorLabel(processor.id)
-    }))
-  }, [])
+    return KNOWLEDGE_V2_FILE_PROCESSORS.map((processor) => {
+      const override = fileProcessorOverrides[processor.id]
 
-  const embeddingModelOptions = useMemo(() => {
-    return embeddingModels.map((model) => ({
-      value: model.id,
-      label: formatModelOptionLabel(model.id)
-    }))
-  }, [embeddingModels])
-
-  const rerankModelOptions = useMemo(() => {
-    return rerankModels.map((model) => ({
-      value: model.id,
-      label: formatModelOptionLabel(model.id)
-    }))
-  }, [rerankModels])
+      return {
+        ...processor,
+        apiKeys: override?.apiKeys
+      }
+    })
+      .filter(hasConfiguredApiKey)
+      .map((processor) => ({
+        value: processor.id,
+        label: t(getFileProcessorLabelKey(processor.id))
+      }))
+  }, [fileProcessorOverrides, t])
 
   const searchModeOptions = useMemo<KnowledgeSelectOption[]>(
     () => [
       { value: 'hybrid', label: t('knowledge.rag.search_mode.hybrid') },
-      { value: 'default', label: t('knowledge.rag.search_mode.default') },
+      { value: 'vector', label: t('knowledge.rag.search_mode.vector') },
       { value: 'bm25', label: t('knowledge.rag.search_mode.bm25') }
     ],
     [t]
@@ -94,10 +80,7 @@ export const useKnowledgeRagConfig = (base: KnowledgeBase) => {
 
   return {
     initialValues,
-    embeddingModels,
     fileProcessorOptions,
-    embeddingModelOptions,
-    rerankModelOptions,
     searchModeOptions,
     save,
     isLoading,

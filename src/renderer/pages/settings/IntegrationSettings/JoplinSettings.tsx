@@ -1,7 +1,7 @@
 import { Button, InfoTooltip, Input, RowFlex, Switch } from '@cherrystudio/ui'
 import { usePreference } from '@data/hooks/usePreference'
 import { loggerService } from '@logger'
-import { useTheme } from '@renderer/context/ThemeProvider'
+import { useTheme } from '@renderer/hooks/useTheme'
 import { formatErrorMessage } from '@renderer/utils/error'
 import type { FC } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -75,13 +75,13 @@ const JoplinSettings: FC = () => {
       <SettingDivider />
       <SettingRow>
         <SettingRowTitle>{t('settings.data.joplin.url')}</SettingRowTitle>
-        <RowFlex className="w-[315px] items-center gap-1.25">
+        <RowFlex className="w-78.75 min-w-0 max-w-full items-center gap-1.25">
           <Input
             type="text"
             value={joplinUrl || ''}
             onChange={handleJoplinUrlChange}
             onBlur={handleJoplinUrlBlur}
-            className="w-[315px]"
+            className="w-78.75 max-w-full"
             placeholder={t('settings.data.joplin.url_placeholder')}
           />
         </RowFlex>
@@ -97,8 +97,8 @@ const JoplinSettings: FC = () => {
             onClick={handleJoplinHelpClick}
           />
         </SettingRowTitle>
-        <RowFlex className="w-[315px] items-center gap-1.25">
-          <RowFlex className="w-full items-center gap-1.25">
+        <RowFlex className="w-78.75 min-w-0 max-w-full items-center gap-1.25">
+          <RowFlex className="w-full min-w-0 items-center gap-1.25">
             <Input
               type="password"
               value={joplinToken || ''}

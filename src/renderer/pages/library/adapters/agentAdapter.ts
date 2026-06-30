@@ -1,8 +1,8 @@
 import { useMutation, useQuery } from '@data/hooks/useDataApi'
 import { AGENTS_MAX_LIMIT, type CreateAgentDto, type UpdateAgentDto } from '@shared/data/api/schemas/agents'
-import type { AgentDetail } from '@shared/data/types/agent'
 import { useCallback } from 'react'
 
+import type { AgentDetail } from '../types'
 import type { ResourceAdapter, ResourceListQuery, ResourceListResult } from './types'
 
 /**
@@ -60,10 +60,10 @@ export function useAgentMutationsById(id: string) {
   const path = `/agents/${id}` as const
 
   const { trigger: updateTrigger } = useMutation('PATCH', path, {
-    refresh: ['/agents']
+    refresh: ['/agents', '/agents/*']
   })
   const { trigger: deleteTrigger } = useMutation('DELETE', path, {
-    refresh: ['/agents']
+    refresh: ['/agents', '/agents/*']
   })
 
   const updateAgent = useCallback(

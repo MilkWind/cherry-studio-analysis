@@ -1,3 +1,5 @@
+import '@renderer/i18n'
+
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -6,7 +8,7 @@ import CherryInOauth from '../ProviderSpecific/CherryInOauth'
 const useProviderMock = vi.fn()
 const useProviderAuthConfigMock = vi.fn()
 
-vi.mock('@renderer/hooks/useProviders', () => ({
+vi.mock('@renderer/hooks/useProvider', () => ({
   useProvider: (...args: any[]) => useProviderMock(...args),
   useProviderAuthConfig: (...args: any[]) => useProviderAuthConfigMock(...args)
 }))

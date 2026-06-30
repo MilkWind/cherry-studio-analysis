@@ -9,7 +9,7 @@ import {
   isVisionModel,
   isWebSearchModel
 } from '@shared/utils/model'
-import { sortBy, toPairs } from 'lodash'
+import { sortBy, toPairs } from 'es-toolkit/compat'
 
 import { normalizeModelGroupName } from './grouping'
 import { filterProviderSettingModelsByKeywords, getDuplicateProviderSettingModelNames } from './utils'
@@ -58,7 +58,7 @@ type CalculateModelListDerivedStateInput = {
   modelStatuses: ModelWithStatus[]
 }
 
-export const groupModels = (models: Model[]): ModelGroups => {
+export const groupModels = (models: Model[], preserveGroupOrder = false): ModelGroups => {
   const grouped = models.reduce<ModelGroups>((acc, model) => {
     const groupName = normalizeModelGroupName(model.group)
     if (!acc[groupName]) {
@@ -67,6 +67,10 @@ export const groupModels = (models: Model[]): ModelGroups => {
     acc[groupName].push(model)
     return acc
   }, {})
+
+  if (preserveGroupOrder) {
+    return grouped
+  }
 
   return sortBy(toPairs(grouped), [0]).reduce((acc, [key, value]) => {
     acc[key] = value
@@ -114,10 +118,17 @@ export const calculateModelSections = (
   selectedCapabilityFilter: ModelListCapabilityFilter
 ): ModelSections => {
   const filteredModels = applyModelFilters(models, searchText, selectedCapabilityFilter)
+  const preserveGroupOrder = Boolean(searchText.trim())
 
   return {
-    enabled: groupModels(filteredModels.filter((model) => model.isEnabled)),
-    disabled: groupModels(filteredModels.filter((model) => !model.isEnabled))
+    enabled: groupModels(
+      filteredModels.filter((model) => model.isEnabled),
+      preserveGroupOrder
+    ),
+    disabled: groupModels(
+      filteredModels.filter((model) => !model.isEnabled),
+      preserveGroupOrder
+    )
   }
 }
 

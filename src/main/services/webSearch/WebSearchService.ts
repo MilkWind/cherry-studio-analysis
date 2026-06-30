@@ -1,6 +1,7 @@
 import { application } from '@application'
 import { loggerService } from '@logger'
 import { BaseService, Injectable, Phase, ServicePhase } from '@main/core/lifecycle'
+import { TraceMethod } from '@mcp-trace/trace-core'
 import type { WebSearchCapability, WebSearchProvider } from '@shared/data/preference/preferenceTypes'
 import type {
   WebSearchExecutionConfig,
@@ -8,7 +9,6 @@ import type {
   WebSearchResponse,
   WebSearchSearchKeywordsRequest
 } from '@shared/data/types/webSearch'
-import { IpcChannel } from '@shared/IpcChannel'
 
 import { postProcessWebSearchResponse } from './postProcessing'
 import type { WebSearchProviderDriver } from './providers/factory'
@@ -43,14 +43,6 @@ export class WebSearchService extends BaseService {
 
   protected onInit(): void {
     this.registerDisposable(() => this.apiKeyRotationState.clear())
-    this.registerIpcHandlers()
-  }
-
-  private registerIpcHandlers(): void {
-    this.ipcHandle(IpcChannel.WebSearch_SearchKeywords, (_, request: WebSearchSearchKeywordsRequest) =>
-      this.searchKeywords(request)
-    )
-    this.ipcHandle(IpcChannel.WebSearch_FetchUrls, (_, request: WebSearchFetchUrlsRequest) => this.fetchUrls(request))
   }
 
   private async prepareContext(request: RunCapabilityRequest): Promise<PreparedWebSearchContext> {
@@ -136,6 +128,7 @@ export class WebSearchService extends BaseService {
     return postProcessed.response
   }
 
+  @TraceMethod({ spanName: 'WebSearch', tag: 'WebSearch' })
   private async runCapability(request: RunCapabilityRequest, httpOptions?: RequestInit): Promise<WebSearchResponse> {
     let context: PreparedWebSearchContext | undefined
 

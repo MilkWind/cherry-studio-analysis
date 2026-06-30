@@ -1,25 +1,18 @@
 //TODO [v2] 类型将转移至 src/shared/data/types/message.ts。 转移后此文件将废弃(deprecated)
 
-import type { CompletionUsage } from '@cherrystudio/openai/resources'
+import type { McpServer } from '@shared/data/types/mcpServer'
+import type { CherryMessagePart } from '@shared/data/types/message'
 import type { ProviderMetadata } from 'ai'
 
-import type {
-  Assistant,
-  FileMetadata,
-  GenerateImageResponse,
-  KnowledgeReference,
-  MCPServer,
-  MCPToolResponse,
-  MemoryItem,
-  Metrics,
-  Model,
-  NormalToolResponse,
-  Topic,
-  Usage,
-  WebSearchResponse,
-  WebSearchSource
-} from '.'
 import type { SerializedError } from './error'
+import type { FileMetadata } from './file'
+import type { GenerateImageResponse } from './image'
+import type { KnowledgeReference } from './knowledge'
+import type { McpToolResponse, NormalToolResponse } from './mcpTool'
+import type { MemoryItem } from './memory'
+import type { Metrics, Usage } from './message'
+import type { Model } from './model'
+import type { WebSearchResponse, WebSearchSource } from './webSearchProvider'
 
 // MessageBlock 类型枚举 - 根据实际API返回特性优化
 export enum MessageBlockType {
@@ -118,7 +111,7 @@ export interface ToolMessageBlock extends BaseMessageBlock {
   arguments?: Record<string, any>
   content?: string | object
   metadata?: BaseMessageBlock['metadata'] & {
-    rawMcpToolResponse?: MCPToolResponse | NormalToolResponse
+    rawMcpToolResponse?: McpToolResponse | NormalToolResponse
   }
 }
 
@@ -186,7 +179,7 @@ export enum AssistantMessageStatus {
 export type Message = {
   id: string
   role: 'user' | 'assistant' | 'system'
-  assistantId: string
+  assistantId: string | undefined
   topicId: string
   createdAt: string
   updatedAt?: string
@@ -198,11 +191,12 @@ export type Message = {
   type?: 'clear'
   useful?: boolean
   askId?: string // 关联的问题消息ID
+  siblingsGroupId?: number
   mentions?: Model[]
   /**
    * @deprecated
    */
-  enabledMCPs?: MCPServer[]
+  enabledMCPs?: McpServer[]
 
   usage?: Usage
   metrics?: Metrics
@@ -211,8 +205,10 @@ export type Message = {
   multiModelMessageStyle?: 'horizontal' | 'vertical' | 'fold' | 'grid'
   foldSelected?: boolean
 
-  // 块集合
+  // 块集合 (v1 — 仅 v1 路径填充，v2 全靠 parts)
   blocks: MessageBlock['id'][]
+
+  parts?: CherryMessagePart[]
 
   // 跟踪Id
   traceId?: string
@@ -231,24 +227,10 @@ export interface Response {
   usage?: Usage
   metrics?: Metrics
   webSearch?: WebSearchResponse
-  mcpToolResponse?: MCPToolResponse[]
+  mcpToolResponse?: McpToolResponse[]
   generateImage?: GenerateImageResponse
   error?: ResponseError
 }
 
 // FIXME: Weak type safety. It may be a specific class instance which inherits Error in runtime.
 export type ResponseError = Record<string, any>
-
-export interface MessageInputBaseParams {
-  assistant: Assistant
-  topic: Topic
-  content?: string
-  files?: FileMetadata[]
-  knowledgeBaseIds?: string[]
-  mentions?: Model[]
-  /**
-   * @deprecated
-   */
-  enabledMCPs?: MCPServer[]
-  usage?: CompletionUsage
-}

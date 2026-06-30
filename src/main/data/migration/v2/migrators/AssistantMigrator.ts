@@ -5,6 +5,7 @@
 
 import { assistantTable } from '@data/db/schemas/assistant'
 import { assistantKnowledgeBaseTable, assistantMcpServerTable } from '@data/db/schemas/assistantRelations'
+import { knowledgeBaseTable } from '@data/db/schemas/knowledge'
 import { entityTagTable, tagTable } from '@data/db/schemas/tagging'
 import { userModelTable } from '@data/db/schemas/userModel'
 import { loggerService } from '@logger'
@@ -13,7 +14,9 @@ import { sql } from 'drizzle-orm'
 import { v4 as uuidv4 } from 'uuid'
 
 import type { MigrationContext } from '../core/MigrationContext'
+import { assignOrderKeysInSequence } from '../utils/orderKey'
 import { BaseMigrator } from './BaseMigrator'
+import { KNOWLEDGE_BASE_ID_REMAP_SHARED_DATA_KEY } from './KnowledgeMigrator'
 import { type AssistantTransformResult, type OldAssistant, transformAssistant } from './mappings/AssistantMappings'
 import { resolveModelReference } from './transformers/ModelTransformers'
 
@@ -236,9 +239,14 @@ export class AssistantMigrator extends BaseMigrator {
         return { ...row, modelId: null }
       })
 
+      // Stamp legacy rows with real fractional-indexing keys, ordered by
+      // transform/insert sequence.
+      // Uses the migrator-side helper per data-ordering-guide.md §5.
+      const orderedAssistantRows = assignOrderKeysInSequence(sanitizedAssistantRows)
+
       await ctx.db.transaction(async (tx) => {
-        for (let i = 0; i < sanitizedAssistantRows.length; i += BATCH_SIZE) {
-          const batch = sanitizedAssistantRows.slice(i, i + BATCH_SIZE)
+        for (let i = 0; i < orderedAssistantRows.length; i += BATCH_SIZE) {
+          const batch = orderedAssistantRows.slice(i, i + BATCH_SIZE)
           await tx.insert(assistantTable).values(batch)
           processed += batch.length
         }
@@ -274,9 +282,42 @@ export class AssistantMigrator extends BaseMigrator {
           logger.info(`Filtered ${droppedAssistantModelRefs} dangling assistant model references`)
         }
 
-        const knowledgeBaseRows = this.preparedResults.flatMap((r) => r.knowledgeBases)
+        // Translate, then filter, knowledge_base references. v1 stores assistant.knowledge_bases[]
+        // with the legacy Redux base id, but KnowledgeMigrator (order 1.8, runs BEFORE this migrator)
+        // re-creates every base under a fresh uuid and publishes the legacy→new id map to sharedData.
+        // Translate each junction row to the new id before filtering — without this, every row carries
+        // a legacy id that never matches the new-uuid set below, so the association is silently
+        // dropped. A legacy id absent from the map points at a base KnowledgeMigrator deleted/skipped,
+        // so it stays unmapped and is dropped here (inserting it would violate the FK on
+        // assistant_knowledge_base.knowledge_base_id).
+        const knowledgeBaseIdRemapRaw = ctx.sharedData.get(KNOWLEDGE_BASE_ID_REMAP_SHARED_DATA_KEY)
+        const knowledgeBaseIdRemap =
+          knowledgeBaseIdRemapRaw instanceof Map
+            ? (knowledgeBaseIdRemapRaw as Map<string, string>)
+            : new Map<string, string>()
+        const allKnowledgeBaseRows = this.preparedResults.flatMap((r) => r.knowledgeBases)
+        const existingKnowledgeBaseIds = new Set(
+          (await tx.select({ id: knowledgeBaseTable.id }).from(knowledgeBaseTable)).map((r) => r.id)
+        )
+        const knowledgeBaseRows = allKnowledgeBaseRows
+          .map((row) => {
+            const migratedId = knowledgeBaseIdRemap.get(row.knowledgeBaseId)
+            return migratedId ? { ...row, knowledgeBaseId: migratedId } : row
+          })
+          .filter((row) => {
+            if (existingKnowledgeBaseIds.has(row.knowledgeBaseId)) return true
+            logger.warn(
+              `Dropping dangling assistant_knowledge_base ref: assistant=${row.assistantId}, knowledgeBase=${row.knowledgeBaseId}`
+            )
+            return false
+          })
         for (let i = 0; i < knowledgeBaseRows.length; i += BATCH_SIZE) {
           await tx.insert(assistantKnowledgeBaseTable).values(knowledgeBaseRows.slice(i, i + BATCH_SIZE))
+        }
+        if (allKnowledgeBaseRows.length !== knowledgeBaseRows.length) {
+          logger.info(
+            `Filtered ${allKnowledgeBaseRows.length - knowledgeBaseRows.length} dangling knowledge_base references`
+          )
         }
 
         // --- Tag migration: assistant.tags[] → tag + entity_tag tables ---
@@ -340,10 +381,10 @@ export class AssistantMigrator extends BaseMigrator {
       // Self-check FK integrity for the tables that should be fully resolved by now:
       // assistant.modelId is sanitized, assistant_mcp_server.mcpServerId points at rows
       // McpServerMigrator (order 1.5) already inserted, and tag/entity_tag were inserted in
-      // the transaction above. assistant_knowledge_base is intentionally EXCLUDED — its
-      // knowledgeBaseId references rows KnowledgeMigrator (order 3) creates later, so those
-      // refs are dangling-by-design here and are covered by the engine's final
-      // verifyForeignKeys().
+      // the transaction above. assistant_knowledge_base is intentionally EXCLUDED — KnowledgeMigrator
+      // (order 1.8) already created its bases and we just remapped each junction row's knowledgeBaseId
+      // legacy→new and dropped any unmapped ref above, so the engine's final verifyForeignKeys() is
+      // the single source of truth for them.
       await this.assertOwnedForeignKeys(ctx.db, [assistantTable, assistantMcpServerTable, tagTable, entityTagTable])
 
       // FK whitelist for ChatMigrator. v2 has no system-reserved 'default' row,

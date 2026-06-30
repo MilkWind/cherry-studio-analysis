@@ -2,7 +2,7 @@ import { knowledgeBaseTable, knowledgeItemTable } from '@data/db/schemas/knowled
 import { messageTable } from '@data/db/schemas/message'
 import { paintingTable } from '@data/db/schemas/painting'
 import { topicTable } from '@data/db/schemas/topic'
-import { setupTestDatabase } from '@test-helpers/db'
+import { rootRow, setupTestDatabase } from '@test-helpers/db'
 import { MockMainDbServiceUtils } from '@test-mocks/main/DbService'
 import { mockMainLoggerService } from '@test-mocks/MainLoggerService'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -69,7 +69,7 @@ describe('orphanCheckerRegistry', () => {
         error: 'missing_embedding_model',
         chunkSize: 1024,
         chunkOverlap: 200,
-        searchMode: 'default'
+        searchMode: 'vector'
       })
     }
 
@@ -182,7 +182,7 @@ describe('orphanCheckerRegistry', () => {
         error: 'missing_embedding_model',
         chunkSize: 1024,
         chunkOverlap: 200,
-        searchMode: 'default'
+        searchMode: 'vector'
       })
       await dbh.db.insert(knowledgeItemTable).values({
         id,
@@ -292,21 +292,23 @@ describe('orphanCheckerRegistry', () => {
         createdAt: Date.now(),
         updatedAt: Date.now()
       })
+      // Each topic gets exactly one virtual root (parentId === null); all seeded
+      // messages hang off it to satisfy the message_topic_root_uniq invariant.
+      await dbh.db.insert(messageTable).values(rootRow(id))
     }
 
     async function seedMessage(id: string, topicId: string) {
       await dbh.db.insert(messageTable).values({
         id,
-        parentId: null,
+        parentId: `vroot-${topicId}`,
         topicId,
         role: 'user',
-        data: { blocks: [] },
+        data: { parts: [] },
         searchableText: '',
         status: 'success',
         siblingsGroupId: 0,
         modelId: null,
         modelSnapshot: null,
-        traceId: null,
         stats: null,
         createdAt: Date.now(),
         updatedAt: Date.now()
@@ -340,16 +342,15 @@ describe('orphanCheckerRegistry', () => {
         await dbh.db.insert(messageTable).values(
           slice.map((id) => ({
             id,
-            parentId: null,
+            parentId: 'vroot-t-bulk',
             topicId: 't-bulk',
             role: 'user' as const,
-            data: { blocks: [] },
+            data: { parts: [] },
             searchableText: '',
             status: 'success' as const,
             siblingsGroupId: 0,
             modelId: null,
             modelSnapshot: null,
-            traceId: null,
             stats: null,
             createdAt: Date.now(),
             updatedAt: Date.now()

@@ -1,6 +1,7 @@
 import {
   type KnowledgeBaseErrorCode,
   type KnowledgeBaseStatus,
+  type KnowledgeChunkStrategy,
   type KnowledgeItemData,
   type KnowledgeItemStatus,
   type KnowledgeItemType,
@@ -34,6 +35,8 @@ export const knowledgeBaseTable = sqliteTable(
 
     chunkSize: integer().notNull(),
     chunkOverlap: integer().notNull(),
+    chunkStrategy: text().$type<KnowledgeChunkStrategy>().notNull().default('structured'),
+    chunkSeparator: text().notNull().default('\\n\\n'),
     threshold: real(),
     documentCount: integer(),
     searchMode: text().$type<KnowledgeSearchMode>().notNull(),
@@ -42,7 +45,8 @@ export const knowledgeBaseTable = sqliteTable(
     ...createUpdateTimestamps
   },
   (t) => [
-    check('knowledge_base_search_mode_check', sql`${t.searchMode} IN ('default', 'bm25', 'hybrid')`),
+    check('knowledge_base_search_mode_check', sql`${t.searchMode} IN ('vector', 'bm25', 'hybrid')`),
+    check('knowledge_base_chunk_strategy_check', sql`${t.chunkStrategy} IN ('structured', 'delimiter')`),
     check('knowledge_base_status_check', sql`${t.status} IN ('completed', 'failed')`),
     check(
       'knowledge_base_status_error_check',
@@ -86,7 +90,7 @@ export const knowledgeItemTable = sqliteTable(
     ...createUpdateTimestamps
   },
   (t) => [
-    check('knowledge_item_type_check', sql`${t.type} IN ('file', 'url', 'note', 'sitemap', 'directory')`),
+    check('knowledge_item_type_check', sql`${t.type} IN ('file', 'url', 'note', 'directory')`),
     check(
       'knowledge_item_status_check',
       sql`${t.status} IN ('idle', 'preparing', 'processing', 'reading', 'embedding', 'completed', 'failed', 'deleting')`
@@ -95,7 +99,7 @@ export const knowledgeItemTable = sqliteTable(
       'knowledge_item_type_status_check',
       sql`
         (${t.type} IN ('file', 'url', 'note') AND ${t.status} IN ('idle', 'processing', 'reading', 'embedding', 'completed', 'failed', 'deleting'))
-        OR (${t.type} IN ('directory', 'sitemap') AND ${t.status} IN ('idle', 'preparing', 'processing', 'completed', 'failed', 'deleting'))
+        OR (${t.type} = 'directory' AND ${t.status} IN ('idle', 'preparing', 'processing', 'completed', 'failed', 'deleting'))
       `
     ),
     check(

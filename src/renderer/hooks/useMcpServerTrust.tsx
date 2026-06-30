@@ -3,9 +3,8 @@ import {
   ensureServerTrusted as ensureServerTrustedCore,
   getCommandPreview
 } from '@renderer/pages/settings/McpSettings/utils'
-import { modalConfirm } from '@renderer/utils'
-import type { UpdateMCPServerDto } from '@shared/data/api/schemas/mcpServers'
-import type { MCPServer } from '@shared/data/types/mcpServer'
+import type { UpdateMcpServerDto } from '@shared/data/api/schemas/mcpServers'
+import type { McpServer } from '@shared/data/types/mcpServer'
 import { useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -15,7 +14,7 @@ import { useTranslation } from 'react-i18next'
  *
  * @param updateServer - callback to persist trust changes for a server
  */
-export const useMcpServerTrust = (updateServer: (body: UpdateMCPServerDto) => void) => {
+export const useMcpServerTrust = (updateServer: (body: UpdateMcpServerDto) => void) => {
   const { t } = useTranslation()
 
   /**
@@ -23,20 +22,25 @@ export const useMcpServerTrust = (updateServer: (body: UpdateMCPServerDto) => vo
    * Shows a warning modal with server command preview
    */
   const requestConfirm = useCallback(
-    async (server: MCPServer): Promise<boolean> => {
+    async (server: McpServer): Promise<boolean> => {
       const commandPreview = getCommandPreview(server)
-      return modalConfirm({
-        title: t('settings.mcp.protocolInstallWarning.title'),
-        content: (
-          <ProtocolInstallWarningContent
-            message={t('settings.mcp.protocolInstallWarning.message')}
-            commandLabel={t('settings.mcp.protocolInstallWarning.command')}
-            commandPreview={commandPreview}
-          />
-        ),
-        okText: t('settings.mcp.protocolInstallWarning.run'),
-        cancelText: t('common.cancel'),
-        okButtonProps: { danger: true }
+      return new Promise<boolean>((resolve) => {
+        window.modal.confirm({
+          centered: true,
+          title: t('settings.mcp.protocolInstallWarning.title'),
+          content: (
+            <ProtocolInstallWarningContent
+              message={t('settings.mcp.protocolInstallWarning.message')}
+              commandLabel={t('settings.mcp.protocolInstallWarning.command')}
+              commandPreview={commandPreview}
+            />
+          ),
+          okText: t('settings.mcp.protocolInstallWarning.run'),
+          cancelText: t('common.cancel'),
+          okButtonProps: { danger: true },
+          onOk: () => resolve(true),
+          onCancel: () => resolve(false)
+        })
       })
     },
     [t]
@@ -47,7 +51,7 @@ export const useMcpServerTrust = (updateServer: (body: UpdateMCPServerDto) => vo
    * Combines core logic with UI confirmation
    */
   const ensureServerTrusted = useCallback(
-    async (server: MCPServer): Promise<MCPServer | null> => {
+    async (server: McpServer): Promise<McpServer | null> => {
       return ensureServerTrustedCore(server, requestConfirm, updateServer)
     },
     [requestConfirm, updateServer]

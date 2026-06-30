@@ -2,10 +2,25 @@ import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-import type { TreeMutationEvent } from '@shared/file/types'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import type { TreeMutationEvent } from '@shared/utils/file'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createDirectoryTree, type DirectoryTreeBuilder } from '../builder'
+import { tryTestRipgrepPath } from './ripgrepTestUtils'
+
+// Production resolves ripgrep via BinaryManager (`getBinaryPath('rg')`), which
+// reads cherry.bin / mise shims — neither is populated under vitest. Point it
+// at the test ripgrep binary so the underlying directory scan spawns a real ripgrep.
+vi.mock('@main/utils/process', async () => {
+  const { tryTestRipgrepPath: tryPath } = await import('./ripgrepTestUtils')
+  const resolvedRgPath = tryPath() ?? '/nonexistent/rg'
+  return {
+    getBinaryExecutionEnv: () => ({}),
+    getBinaryPath: async (name?: string) => (name === 'rg' ? resolvedRgPath : (name ?? ''))
+  }
+})
+
+const ripgrepAvailable = tryTestRipgrepPath() !== null
 
 const waitForEvent = (
   builder: DirectoryTreeBuilder,
@@ -27,7 +42,7 @@ const waitForEvent = (
   })
 }
 
-describe('createDirectoryTree — initial scan', () => {
+describe.skipIf(!ripgrepAvailable)('createDirectoryTree — initial scan', () => {
   let tmp: string
   beforeEach(async () => {
     tmp = await mkdtemp(path.join(tmpdir(), 'cherry-tree-scan-'))
@@ -50,7 +65,7 @@ describe('createDirectoryTree — initial scan', () => {
       expect(sub?.isTreeDir()).toBe(true)
       expect(sub?.isTreeDir() && sub.hasChild('inner.md')).toBe(true)
     } finally {
-      builder.dispose()
+      await builder.disposeAsync()
     }
   })
 
@@ -63,7 +78,7 @@ describe('createDirectoryTree — initial scan', () => {
       expect(builder.root.hasChild('a.md')).toBe(true)
       expect(builder.root.hasChild('b.txt')).toBe(false)
     } finally {
-      builder.dispose()
+      await builder.disposeAsync()
     }
   })
 
@@ -76,7 +91,7 @@ describe('createDirectoryTree — initial scan', () => {
       expect(node?.stats?.mtime).toBeTypeOf('number')
       expect(node?.stats?.birthtime).toBeTypeOf('number')
     } finally {
-      withStats.dispose()
+      await withStats.disposeAsync()
     }
 
     const withoutStats = await createDirectoryTree(tmp, { extensions: ['.md'] })
@@ -84,7 +99,7 @@ describe('createDirectoryTree — initial scan', () => {
       const node = withoutStats.getNode(path.join(tmp, 'a.md'))
       expect(node?.stats).toBeUndefined()
     } finally {
-      withoutStats.dispose()
+      await withoutStats.disposeAsync()
     }
   })
 
@@ -100,7 +115,7 @@ describe('createDirectoryTree — initial scan', () => {
       expect(builder.getNode(path.join(tmp, 'sub'))).toBe(sub)
       expect(builder.getNode(path.join(tmp, 'missing.md'))).toBeNull()
     } finally {
-      builder.dispose()
+      await builder.disposeAsync()
     }
   })
 
@@ -123,7 +138,7 @@ describe('createDirectoryTree — initial scan', () => {
       expect(builder.root.hasChild('dist')).toBe(false)
       expect(builder.getNode(path.join(tmp, 'node_modules', 'lodash', 'index.js'))).toBeNull()
     } finally {
-      builder.dispose()
+      await builder.disposeAsync()
     }
   })
 
@@ -139,7 +154,7 @@ describe('createDirectoryTree — initial scan', () => {
       expect(builder.root.hasChild('app.ts')).toBe(true)
       expect(builder.root.hasChild('.git')).toBe(false)
     } finally {
-      builder.dispose()
+      await builder.disposeAsync()
     }
   })
 
@@ -154,12 +169,12 @@ describe('createDirectoryTree — initial scan', () => {
       expect(builder.root.hasChild('visible.md')).toBe(true)
       expect(builder.root.hasChild('secret.md')).toBe(true)
     } finally {
-      builder.dispose()
+      await builder.disposeAsync()
     }
   })
 })
 
-describe('createDirectoryTree — watcher mutations', () => {
+describe.skipIf(!ripgrepAvailable)('createDirectoryTree — watcher mutations', () => {
   let tmp: string
   beforeEach(async () => {
     tmp = await mkdtemp(path.join(tmpdir(), 'cherry-tree-watch-'))
@@ -178,7 +193,7 @@ describe('createDirectoryTree — watcher mutations', () => {
       expect(event.basename).toBe('added.md')
       expect(builder.getNode(path.join(tmp, 'added.md'))).not.toBeNull()
     } finally {
-      builder.dispose()
+      await builder.disposeAsync()
     }
   })
 
@@ -191,7 +206,7 @@ describe('createDirectoryTree — watcher mutations', () => {
       expect(event.kind).toBe('directory')
       expect(builder.getNode(path.join(tmp, 'sub'))?.isTreeDir()).toBe(true)
     } finally {
-      builder.dispose()
+      await builder.disposeAsync()
     }
   })
 
@@ -205,7 +220,7 @@ describe('createDirectoryTree — watcher mutations', () => {
       expect(builder.getNode(path.join(tmp, 'gone.md'))).toBeNull()
       expect(builder.root.hasChild('gone.md')).toBe(false)
     } finally {
-      builder.dispose()
+      await builder.disposeAsync()
     }
   })
 
@@ -224,7 +239,7 @@ describe('createDirectoryTree — watcher mutations', () => {
       sub.dispose()
       expect(allEvents.some((e) => 'path' in e && e.path.endsWith('/unwanted.txt'))).toBe(false)
     } finally {
-      builder.dispose()
+      await builder.disposeAsync()
     }
   })
 
@@ -260,7 +275,7 @@ describe('createDirectoryTree — watcher mutations', () => {
 
       sub.dispose()
     } finally {
-      builder.dispose()
+      await builder.disposeAsync()
     }
   })
 
@@ -287,7 +302,7 @@ describe('createDirectoryTree — watcher mutations', () => {
       const after = builder.getNode(path.join(tmp, 'note.md'))
       expect(after?.stats?.mtime).toBeGreaterThan(beforeMtime ?? 0)
     } finally {
-      builder.dispose()
+      await builder.disposeAsync()
     }
   })
 
@@ -303,7 +318,7 @@ describe('createDirectoryTree — watcher mutations', () => {
       expect(builder.getNode(path.join(tmp, 'old.md'))).toBeNull()
       expect(builder.getNode(path.join(tmp, 'new.md'))).not.toBeNull()
     } finally {
-      builder.dispose()
+      await builder.disposeAsync()
     }
   })
 
@@ -346,7 +361,7 @@ describe('createDirectoryTree — watcher mutations', () => {
 
       sub.dispose()
     } finally {
-      builder.dispose()
+      await builder.disposeAsync()
     }
   })
 
@@ -369,7 +384,7 @@ describe('createDirectoryTree — watcher mutations', () => {
       expect(builder.getNode(path.join(tmp, 'old'))).toBeNull()
       expect(builder.getNode(path.join(tmp, 'old', 'leaf.md'))).toBeNull()
     } finally {
-      builder.dispose()
+      await builder.disposeAsync()
     }
   })
 
@@ -379,7 +394,7 @@ describe('createDirectoryTree — watcher mutations', () => {
       const applied = builder.rename(path.join(tmp, 'missing.md'), path.join(tmp, 'whatever.md'))
       expect(applied).toBe(false)
     } finally {
-      builder.dispose()
+      await builder.disposeAsync()
     }
   })
 
@@ -391,12 +406,14 @@ describe('createDirectoryTree — watcher mutations', () => {
     const sub = builder.onMutation((e) => events.push(e))
 
     // Quick proof the watcher is alive: a write before dispose lands.
+    const liveEvent = waitForEvent(builder, (e) => e.type === 'added' && e.path.endsWith('/live.md'))
     await writeFile(path.join(tmp, 'live.md'), 'y')
-    await new Promise((resolve) => setTimeout(resolve, 300))
+    await liveEvent
     expect(events.some((e) => e.type === 'added' && 'path' in e && e.path.endsWith('/live.md'))).toBe(true)
 
     sub.dispose()
     builder.dispose()
+    await builder.disposeAsync()
     const eventsAtDispose = events.length
 
     // After dispose, further FS mutations must not surface.
@@ -419,22 +436,22 @@ describe('createDirectoryTree — watcher mutations', () => {
       expect(JSON.stringify(snap)).toMatch(/"a\.md"/)
       expect(JSON.stringify(snap)).not.toMatch(/parent/)
     } finally {
-      builder.dispose()
+      await builder.disposeAsync()
     }
   })
 })
 
-describe('createDirectoryTree — DB isolation', () => {
+describe.skipIf(!ripgrepAvailable)('createDirectoryTree — DB isolation', () => {
   it('the tree primitive does not import @main/data', async () => {
     // Import-graph proxy: a regex over the source files. The classes live
-    // in `src/shared/file/types/tree.ts` and the main-side primitive
+    // in `src/shared/utils/file/tree.ts` and the main-side primitive
     // is split across `builder.ts` / `DirectoryTreeManager.ts`. None of
     // them may pull anything from `@main/data`.
     const { readFile } = await import('node:fs/promises')
     const builderSource = await readFile(new URL('../builder.ts', import.meta.url), 'utf8')
     const managerSource = await readFile(new URL('../DirectoryTreeManager.ts', import.meta.url), 'utf8')
     const sharedTreeSource = await readFile(
-      new URL('../../../../../shared/file/types/tree.ts', import.meta.url),
+      new URL('../../../../../shared/utils/file/tree.ts', import.meta.url),
       'utf8'
     )
     for (const src of [builderSource, managerSource, sharedTreeSource]) {

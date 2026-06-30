@@ -8,10 +8,11 @@
 
 import { application } from '@application'
 import { mcpServerTable } from '@data/db/schemas/mcpServer'
+import { agentService } from '@data/services/AgentService'
 import { loggerService } from '@logger'
 import { DataApiErrorFactory } from '@shared/data/api'
-import type { CreateMCPServerDto, ListMCPServersQuery, UpdateMCPServerDto } from '@shared/data/api/schemas/mcpServers'
-import type { MCPServer } from '@shared/data/types/mcpServer'
+import type { CreateMcpServerDto, ListMcpServersQuery, UpdateMcpServerDto } from '@shared/data/api/schemas/mcpServers'
+import type { McpServer } from '@shared/data/types/mcpServer'
 import { and, asc, eq, type SQL, sql } from 'drizzle-orm'
 
 import { nullsToUndefined, timestampToISO } from './utils/rowMappers'
@@ -19,14 +20,14 @@ import { nullsToUndefined, timestampToISO } from './utils/rowMappers'
 const logger = loggerService.withContext('DataApi:McpServerService')
 
 /**
- * Convert database row to MCPServer entity
+ * Convert database row to McpServer entity
  */
-function rowToMcpServer(row: typeof mcpServerTable.$inferSelect): MCPServer {
+function rowToMcpServer(row: typeof mcpServerTable.$inferSelect): McpServer {
   const clean = nullsToUndefined(row)
   return {
     ...clean,
-    type: clean.type as MCPServer['type'],
-    installSource: clean.installSource as MCPServer['installSource'],
+    type: clean.type as McpServer['type'],
+    installSource: clean.installSource as McpServer['installSource'],
     createdAt: timestampToISO(row.createdAt),
     updatedAt: timestampToISO(row.updatedAt)
   }
@@ -40,11 +41,11 @@ export class McpServerService {
   /**
    * Get an MCP server by ID
    */
-  async getById(id: string): Promise<MCPServer> {
+  async getById(id: string): Promise<McpServer> {
     const [row] = await this.db.select().from(mcpServerTable).where(eq(mcpServerTable.id, id)).limit(1)
 
     if (!row) {
-      throw DataApiErrorFactory.notFound('MCPServer', id)
+      throw DataApiErrorFactory.notFound('McpServer', id)
     }
 
     return rowToMcpServer(row)
@@ -53,7 +54,7 @@ export class McpServerService {
   /**
    * List MCP servers with optional filters
    */
-  async list(query: ListMCPServersQuery): Promise<{ items: MCPServer[]; total: number; page: number }> {
+  async list(query: ListMcpServersQuery): Promise<{ items: McpServer[]; total: number; page: number }> {
     const conditions: SQL[] = []
     if (query.id !== undefined) {
       conditions.push(eq(mcpServerTable.id, query.id))
@@ -82,7 +83,7 @@ export class McpServerService {
   /**
    * Create a new MCP server
    */
-  async create(dto: CreateMCPServerDto): Promise<MCPServer> {
+  async create(dto: CreateMcpServerDto): Promise<McpServer> {
     this.validateName(dto.name)
 
     const { sortOrder, isActive, ...rest } = dto
@@ -104,7 +105,7 @@ export class McpServerService {
   /**
    * Update an existing MCP server
    */
-  async update(id: string, dto: UpdateMCPServerDto): Promise<MCPServer> {
+  async update(id: string, dto: UpdateMcpServerDto): Promise<McpServer> {
     await this.getById(id)
 
     if (dto.name !== undefined) {
@@ -125,7 +126,7 @@ export class McpServerService {
   /**
    * Find an MCP server by ID or name. Returns undefined if not found.
    */
-  async findByIdOrName(idOrName: string): Promise<MCPServer | undefined> {
+  async findByIdOrName(idOrName: string): Promise<McpServer | undefined> {
     const [row] = await this.db.select().from(mcpServerTable).where(eq(mcpServerTable.id, idOrName)).limit(1)
 
     if (row) return rowToMcpServer(row)
@@ -136,12 +137,33 @@ export class McpServerService {
   }
 
   /**
-   * Delete an MCP server
+   * Delete an MCP server and cascade-remove its associations from all agents.
+   * Junction table rows are explicitly removed first so we can identify affected
+   * agents for event emission; FK ON DELETE CASCADE is a safety net.
    */
   async delete(id: string): Promise<void> {
     await this.getById(id)
 
-    await this.db.delete(mcpServerTable).where(eq(mcpServerTable.id, id))
+    let affectedAgentIds: string[] = []
+    await application.get('DbService').withWriteTx(async (tx) => {
+      affectedAgentIds = await agentService.removeMcpFromAllAgentsTx(tx, id)
+      await tx.delete(mcpServerTable).where(eq(mcpServerTable.id, id))
+    })
+
+    // The delete has already committed. `emitAgentUpdatedForIds` opens fresh
+    // reads that are not covered by the write-mutex busy-retry, so a transient
+    // failure (e.g. SQLITE_BUSY) must NOT reject delete() — the server row is
+    // already gone. Log the un-refreshed agents so warm sessions can be
+    // reconciled, then swallow.
+    try {
+      await agentService.emitAgentUpdatedForIds(affectedAgentIds)
+    } catch (error) {
+      logger.error('MCP server deleted but agent refresh failed; affected agents may retain stale tool policy', {
+        mcpServerId: id,
+        affectedAgentIds,
+        error
+      })
+    }
 
     logger.info('Deleted MCP server', { id })
   }

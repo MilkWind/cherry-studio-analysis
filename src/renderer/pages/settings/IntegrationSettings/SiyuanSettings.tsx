@@ -1,7 +1,7 @@
 import { Button, InfoTooltip, Input, RowFlex } from '@cherrystudio/ui'
 import { usePreference } from '@data/hooks/usePreference'
 import { loggerService } from '@logger'
-import { useTheme } from '@renderer/context/ThemeProvider'
+import { useTheme } from '@renderer/hooks/useTheme'
 import type { FC } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -77,7 +77,7 @@ const SiyuanSettings: FC = () => {
       <SettingDivider />
       <SettingRow>
         <SettingRowTitle>{t('settings.data.siyuan.api_url')}</SettingRowTitle>
-        <RowFlex className="w-[315px] items-center gap-1.25">
+        <RowFlex className="w-78.75 min-w-0 max-w-full items-center gap-1.25">
           <Input
             type="text"
             value={siyuanApiUrl || ''}
@@ -97,8 +97,8 @@ const SiyuanSettings: FC = () => {
             onClick={handleSiyuanHelpClick}
           />
         </SettingRowTitle>
-        <RowFlex className="w-[315px] items-center gap-1.25">
-          <RowFlex className="w-full items-center gap-1.25">
+        <RowFlex className="w-78.75 min-w-0 max-w-full items-center gap-1.25">
+          <RowFlex className="w-full min-w-0 items-center gap-1.25">
             <Input
               type="password"
               value={siyuanToken || ''}
@@ -116,7 +116,7 @@ const SiyuanSettings: FC = () => {
       <SettingDivider />
       <SettingRow>
         <SettingRowTitle>{t('settings.data.siyuan.box_id')}</SettingRowTitle>
-        <RowFlex className="w-[315px] items-center gap-1.25">
+        <RowFlex className="w-78.75 min-w-0 max-w-full items-center gap-1.25">
           <Input
             type="text"
             value={siyuanBoxId || ''}
@@ -128,7 +128,7 @@ const SiyuanSettings: FC = () => {
       <SettingDivider />
       <SettingRow>
         <SettingRowTitle>{t('settings.data.siyuan.root_path')}</SettingRowTitle>
-        <RowFlex className="w-[315px] items-center gap-1.25">
+        <RowFlex className="w-78.75 min-w-0 max-w-full items-center gap-1.25">
           <Input
             type="text"
             value={siyuanRootPath || ''}

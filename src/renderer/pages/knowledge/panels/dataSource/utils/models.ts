@@ -1,27 +1,24 @@
-import { formatRelativeTime } from '@renderer/pages/knowledge/utils'
-import type { FileEntry } from '@shared/data/types/file'
-import type { KnowledgeItemOf, KnowledgeItemStatus, KnowledgeItemType } from '@shared/data/types/knowledge'
+import { formatRelativeTime } from '@renderer/utils/time'
+import {
+  getKnowledgeItemDisplayTitle,
+  getKnowledgePathBasename,
+  type KnowledgeItemOf,
+  type KnowledgeItemStatus,
+  type KnowledgeItemType
+} from '@shared/data/types/knowledge'
 import type { LucideIcon } from 'lucide-react'
-import { Boxes, FileText, Folder, Globe, Link2, StickyNote } from 'lucide-react'
+import { FileText, Folder, Link2, StickyNote } from 'lucide-react'
 
-export type DataSourceFilter = 'all' | KnowledgeItemType
 export type DataSourceStatus = 'completed' | 'processing' | 'failed'
 export type DataSourceStatusIcon = 'check' | 'loader' | 'alert'
 
 export interface DataSourceDisplayContext {
-  fileEntry?: FileEntry
   language: string
 }
 
 export interface DataSourceIconMeta {
   icon: LucideIcon
   iconClassName: string
-}
-
-export interface DataSourceFilterDefinition {
-  value: DataSourceFilter
-  labelKey: string
-  icon: LucideIcon
 }
 
 export interface DataSourceStatusViewModel {
@@ -55,36 +52,11 @@ type DataSourceTypeDisplayConfigMap = {
 const getRelativeMetaParts = (updatedAt: string, language: string, extraParts: Array<string | undefined> = []) =>
   [...extraParts, formatRelativeTime(updatedAt, language)].filter((part): part is string => Boolean(part))
 
-const getNoteTitle = (content: string) => {
-  const firstLine = content
-    .split('\n')
-    .map((line) => line.trim())
-    .find(Boolean)
-
-  return firstLine || ''
-}
-
-const getPathName = (source: string) => {
-  const normalizedSource = source.replace(/[/\\]+$/, '')
-  const name = normalizedSource.split(/[/\\]/).pop()?.trim()
-
-  return name || normalizedSource || source
-}
-
-const getFileTitle = (item: KnowledgeItemOf<'file'>, fileEntry?: FileEntry) => {
-  if (!fileEntry) {
-    return getPathName(item.data.source)
-  }
-
-  return fileEntry.ext ? `${fileEntry.name}.${fileEntry.ext}` : fileEntry.name
-}
-
-const getFileSuffix = (item: KnowledgeItemOf<'file'>, fileEntry?: FileEntry) => {
-  const fallbackName = getPathName(item.data.source)
+const getFileSuffix = (item: KnowledgeItemOf<'file'>) => {
+  const fallbackName = getKnowledgePathBasename(item.data.source)
   const fallbackExt = fallbackName.includes('.') ? fallbackName.split('.').pop() : undefined
-  const ext = fileEntry?.ext ?? fallbackExt
 
-  return (ext || 'FILE').toLowerCase()
+  return (fallbackExt || 'FILE').toLowerCase()
 }
 
 export const resolveDataSourceStatusViewModel = (status: KnowledgeItemStatus): DataSourceStatusViewModel => {
@@ -157,8 +129,8 @@ export const dataSourceTypeDisplayConfig: DataSourceTypeDisplayConfigMap = {
       icon: FileText,
       iconClassName: 'text-blue-500'
     },
-    getTitle: (item, { fileEntry }) => getFileTitle(item, fileEntry),
-    getSuffix: (item, { fileEntry }) => getFileSuffix(item, fileEntry),
+    getTitle: (item) => getKnowledgeItemDisplayTitle(item),
+    getSuffix: (item) => getFileSuffix(item),
     getMetaParts: (item, { language }) => getRelativeMetaParts(item.updatedAt, language),
     getStatus: resolveDataSourceStatusViewModel
   },
@@ -168,7 +140,7 @@ export const dataSourceTypeDisplayConfig: DataSourceTypeDisplayConfigMap = {
       icon: StickyNote,
       iconClassName: 'text-amber-500'
     },
-    getTitle: (item) => getNoteTitle(item.data.content),
+    getTitle: (item) => getKnowledgeItemDisplayTitle(item),
     getSuffix: () => '',
     getMetaParts: (item, { language }) => getRelativeMetaParts(item.updatedAt, language),
     getStatus: resolveDataSourceStatusViewModel
@@ -179,7 +151,7 @@ export const dataSourceTypeDisplayConfig: DataSourceTypeDisplayConfigMap = {
       icon: Folder,
       iconClassName: 'text-violet-500'
     },
-    getTitle: (item) => item.data.source,
+    getTitle: (item) => getKnowledgeItemDisplayTitle(item),
     getSuffix: () => '',
     getMetaParts: (item, { language }) => getRelativeMetaParts(item.updatedAt, language),
     getStatus: resolveDataSourceStatusViewModel
@@ -190,37 +162,9 @@ export const dataSourceTypeDisplayConfig: DataSourceTypeDisplayConfigMap = {
       icon: Link2,
       iconClassName: 'text-cyan-500'
     },
-    getTitle: (item) => item.data.source,
-    getSuffix: () => '',
-    getMetaParts: (item, { language }) => getRelativeMetaParts(item.updatedAt, language),
-    getStatus: resolveDataSourceStatusViewModel
-  },
-  sitemap: {
-    filterLabelKey: 'knowledge.data_source.filters.sitemap',
-    icon: {
-      icon: Globe,
-      iconClassName: 'text-emerald-500'
-    },
-    getTitle: (item) => item.data.source,
+    getTitle: (item) => getKnowledgeItemDisplayTitle(item),
     getSuffix: () => '',
     getMetaParts: (item, { language }) => getRelativeMetaParts(item.updatedAt, language),
     getStatus: resolveDataSourceStatusViewModel
   }
 }
-
-const dataSourceTypeDisplayEntries = Object.entries(dataSourceTypeDisplayConfig) as Array<
-  [KnowledgeItemType, DataSourceTypeDisplayConfigMap[KnowledgeItemType]]
->
-
-export const dataSourceFilterDefinitions: DataSourceFilterDefinition[] = [
-  {
-    value: 'all',
-    labelKey: 'knowledge.data_source.filters.all',
-    icon: Boxes
-  },
-  ...dataSourceTypeDisplayEntries.map(([value, config]) => ({
-    value,
-    labelKey: config.filterLabelKey,
-    icon: config.icon.icon
-  }))
-]

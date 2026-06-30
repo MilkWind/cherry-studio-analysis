@@ -5,32 +5,39 @@
  */
 
 import { application } from '@application'
-import { fileEntryTable, fileRefTable } from '@data/db/schemas/file'
 import { knowledgeItemTable } from '@data/db/schemas/knowledge'
 import { type SqliteErrorHandlers, withSqliteErrors } from '@data/db/sqliteErrors'
 import type { DbType } from '@data/db/types'
 import { loggerService } from '@logger'
-import type { OffsetPaginationResponse } from '@shared/data/api'
 import { DataApiErrorFactory } from '@shared/data/api'
-import type { ListKnowledgeItemsQuery } from '@shared/data/api/schemas/knowledges'
-import type { FileEntryId } from '@shared/data/types/file'
-import type { KnowledgeItemFileRefRole } from '@shared/data/types/file/ref'
-import { knowledgeItemSourceType } from '@shared/data/types/file/ref'
+import type { KnowledgeItemListResponse, ListKnowledgeItemsQuery } from '@shared/data/api/schemas/knowledges'
 import {
   type CreateKnowledgeItemDto,
   type KnowledgeItem,
   type KnowledgeItemData,
   KnowledgeItemSchema,
-  type KnowledgeItemStatus
+  type KnowledgeItemStatus,
+  type KnowledgeItemType
 } from '@shared/data/types/knowledge'
-import { and, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm'
-import { v4 as uuidv4 } from 'uuid'
+import { and, eq, inArray, isNull, ne, type SQL, sql } from 'drizzle-orm'
 
 import { knowledgeBaseService } from './KnowledgeBaseService'
+import { asNumericKey, decodeListCursor, encodeCursor, keysetOrdering } from './utils/keysetCursor'
 import { timestampToISO } from './utils/rowMappers'
 
 const logger = loggerService.withContext('DataApi:KnowledgeItemService')
 const CONTAINER_CHILD_FAILURE_ERROR = 'One or more child items failed'
+/**
+ * Item statuses that mean "indexing is in progress" — the item is being driven
+ * by a job and is neither finished (completed/failed), idle (never started), nor
+ * being deleted. Used to find items stranded by an interrupted job on boot.
+ */
+const KNOWLEDGE_ITEM_IN_FLIGHT_STATUSES = [
+  'preparing',
+  'processing',
+  'reading',
+  'embedding'
+] as const satisfies readonly KnowledgeItemStatus[]
 
 type KnowledgeItemRow = typeof knowledgeItemTable.$inferSelect
 type KnowledgeItemRowLike = Omit<KnowledgeItemRow, 'data'> & {
@@ -77,35 +84,52 @@ export class KnowledgeItemService {
     return dbService.getDb()
   }
 
-  async list(baseId: string, query: ListKnowledgeItemsQuery): Promise<OffsetPaginationResponse<KnowledgeItem>> {
+  async list(baseId: string, query: ListKnowledgeItemsQuery): Promise<KnowledgeItemListResponse> {
     await knowledgeBaseService.getById(baseId)
-    const { page, limit, type, groupId } = query
-    const offset = (page - 1) * limit
-    const conditions = [eq(knowledgeItemTable.baseId, baseId), ne(knowledgeItemTable.status, 'deleting')]
+    const { limit, type, groupId } = query
+
+    const filterConditions: SQL[] = [eq(knowledgeItemTable.baseId, baseId), ne(knowledgeItemTable.status, 'deleting')]
 
     if (type !== undefined) {
-      conditions.push(eq(knowledgeItemTable.type, type))
+      filterConditions.push(eq(knowledgeItemTable.type, type))
     }
     if (groupId !== undefined) {
-      conditions.push(groupId === null ? isNull(knowledgeItemTable.groupId) : eq(knowledgeItemTable.groupId, groupId))
+      filterConditions.push(
+        groupId === null ? isNull(knowledgeItemTable.groupId) : eq(knowledgeItemTable.groupId, groupId)
+      )
     }
 
-    const where = and(...conditions)
+    // Keyset pagination over `(createdAt DESC, id ASC)`. One direction spec drives both the WHERE
+    // predicate and the matching ORDER BY (via the shared util) so the two can't silently drift.
+    const ordering = keysetOrdering(knowledgeItemTable.createdAt, knowledgeItemTable.id, { major: 'desc', tie: 'asc' })
+    const conditions = [...filterConditions]
+    const cursor = decodeListCursor(query.cursor, asNumericKey, 'knowledge-item')
+    if (cursor) {
+      conditions.push(ordering.where(cursor))
+    }
+
     const [rows, [{ count }]] = await Promise.all([
       this.db
         .select()
         .from(knowledgeItemTable)
-        .where(where)
-        .orderBy(desc(knowledgeItemTable.createdAt), desc(knowledgeItemTable.id))
-        .limit(limit)
-        .offset(offset),
-      this.db.select({ count: sql<number>`count(*)` }).from(knowledgeItemTable).where(where)
+        .where(and(...conditions))
+        .orderBy(...ordering.orderBy)
+        .limit(limit + 1),
+      this.db
+        .select({ count: sql<number>`count(*)` })
+        .from(knowledgeItemTable)
+        .where(and(...filterConditions))
     ])
 
+    const pageRows = rows.slice(0, limit)
+
     return {
-      items: rows.map((row) => rowToKnowledgeItem(row)),
+      items: pageRows.map((row) => rowToKnowledgeItem(row)),
       total: count,
-      page: query.page
+      nextCursor:
+        rows.length > limit
+          ? encodeCursor(pageRows[pageRows.length - 1].createdAt, pageRows[pageRows.length - 1].id)
+          : undefined
     }
   }
 
@@ -183,22 +207,48 @@ export class KnowledgeItemService {
     return [...rootIdsByBase.entries()].map(([baseId, rootItemIds]) => ({ baseId, rootItemIds }))
   }
 
+  /**
+   * Mark every item stranded in an in-flight status as `failed`. Called once on
+   * boot: an indexing job abandoned by an app quit / restart leaves its item in
+   * `preparing`/`processing`/`reading`/`embedding` with nothing left to drive
+   * it, so without this the item would spin forever and could not be reindexed
+   * (reindex only accepts completed/failed).
+   *
+   * A single UPDATE covers leaves and their ancestor containers together: a
+   * container with an in-flight descendant is itself in-flight
+   * (`reconcileContainers` keeps it `processing` while any child is active), so
+   * failing every in-flight row leaves no completed/idle container pointing at a
+   * failed child — the rollup invariant holds without a separate reconcile pass.
+   *
+   * @returns the number of items marked failed.
+   */
+  async failInterruptedItems(error: string): Promise<number> {
+    const reason = error.trim()
+    if (!reason) {
+      throw DataApiErrorFactory.validation({
+        error: ['Interrupted-item failure reason must be non-empty']
+      })
+    }
+
+    const dbService = application.get('DbService')
+    const updatedRows = await dbService.withWriteTx((tx) =>
+      tx
+        .update(knowledgeItemTable)
+        .set({ status: 'failed', error: reason })
+        .where(inArray(knowledgeItemTable.status, [...KNOWLEDGE_ITEM_IN_FLIGHT_STATUSES]))
+        .returning({ id: knowledgeItemTable.id })
+    )
+
+    if (updatedRows.length > 0) {
+      logger.info('Marked interrupted knowledge items as failed', { count: updatedRows.length })
+    }
+    return updatedRows.length
+  }
+
   async create(baseId: string, item: CreateKnowledgeItemDto): Promise<KnowledgeItem> {
     const dbService = application.get('DbService')
     const row = await dbService.withWriteTx(async (tx) => {
       await this.validateGroupOwnerTx(tx, baseId, item.groupId)
-
-      if (item.type === 'file') {
-        const [fileEntry] = await tx
-          .select({ id: fileEntryTable.id })
-          .from(fileEntryTable)
-          .where(eq(fileEntryTable.id, item.data.fileEntryId))
-          .limit(1)
-
-        if (!fileEntry) {
-          throw DataApiErrorFactory.notFound('FileEntry', item.data.fileEntryId)
-        }
-      }
 
       const [insertedRow] = await withSqliteErrors(
         async () =>
@@ -233,19 +283,6 @@ export class KnowledgeItemService {
 
       if (!insertedRow) {
         throw DataApiErrorFactory.dataInconsistent('KnowledgeItem', 'Knowledge item create result missing')
-      }
-
-      if (item.type === 'file') {
-        const now = Date.now()
-        await tx.insert(fileRefTable).values({
-          id: uuidv4(),
-          fileEntryId: item.data.fileEntryId,
-          sourceType: knowledgeItemSourceType,
-          sourceId: insertedRow.id,
-          role: 'source',
-          createdAt: now,
-          updatedAt: now
-        })
       }
 
       return insertedRow
@@ -285,9 +322,9 @@ export class KnowledgeItemService {
       })
     }
 
-    if (owner.type !== 'directory' && owner.type !== 'sitemap') {
+    if (owner.type !== 'directory') {
       throw DataApiErrorFactory.validation({
-        groupId: [`Knowledge item group owner must be a directory or sitemap: ${groupId}`]
+        groupId: [`Knowledge item group owner must be a directory: ${groupId}`]
       })
     }
 
@@ -389,7 +426,6 @@ export class KnowledgeItemService {
         .select({ groupId: knowledgeItemTable.groupId })
         .from(knowledgeItemTable)
         .where(and(eq(knowledgeItemTable.baseId, baseId), inArray(knowledgeItemTable.id, uniqueItemIds)))
-      await this.deleteFileRefsForSubtreeTx(tx, baseId, uniqueItemIds)
       await tx
         .delete(knowledgeItemTable)
         .where(and(eq(knowledgeItemTable.baseId, baseId), inArray(knowledgeItemTable.id, uniqueItemIds)))
@@ -402,139 +438,6 @@ export class KnowledgeItemService {
     await this.reconcileContainers(baseId, deleted.groupIds)
 
     logger.info('Deleted knowledge items by ids', { baseId, count: deleted.rowsAffected })
-  }
-
-  private async deleteFileRefsForSubtreeTx(tx: Pick<DbType, 'run'>, baseId: string, rootIds: string[]): Promise<void> {
-    const uniqueRootIds = [...new Set(rootIds)]
-    if (uniqueRootIds.length === 0) {
-      return
-    }
-
-    await tx.run(sql`
-      WITH RECURSIVE subtree AS (
-        SELECT id
-        FROM knowledge_item
-        WHERE base_id = ${baseId}
-          AND id IN (${sql.join(
-            uniqueRootIds.map((id) => sql`${id}`),
-            sql`, `
-          )})
-
-        UNION ALL
-
-        SELECT child.id
-        FROM knowledge_item child
-        INNER JOIN subtree parent ON child.group_id = parent.id
-        WHERE child.base_id = ${baseId}
-      )
-      DELETE FROM file_ref
-      WHERE source_type = ${knowledgeItemSourceType}
-        AND source_id IN (SELECT DISTINCT id FROM subtree)
-    `)
-  }
-
-  async replaceFileRef(itemId: string, fileEntryId: FileEntryId, role: KnowledgeItemFileRefRole): Promise<void> {
-    const dbService = application.get('DbService')
-    await dbService.withWriteTx(async (tx) => {
-      const [item] = await tx
-        .select({ id: knowledgeItemTable.id })
-        .from(knowledgeItemTable)
-        .where(eq(knowledgeItemTable.id, itemId))
-        .limit(1)
-      if (!item) {
-        throw DataApiErrorFactory.notFound('KnowledgeItem', itemId)
-      }
-
-      const [fileEntry] = await tx
-        .select({ id: fileEntryTable.id })
-        .from(fileEntryTable)
-        .where(eq(fileEntryTable.id, fileEntryId))
-        .limit(1)
-      if (!fileEntry) {
-        throw DataApiErrorFactory.notFound('FileEntry', fileEntryId)
-      }
-
-      await tx
-        .delete(fileRefTable)
-        .where(
-          and(
-            eq(fileRefTable.sourceType, knowledgeItemSourceType),
-            eq(fileRefTable.sourceId, itemId),
-            eq(fileRefTable.role, role)
-          )
-        )
-
-      const now = Date.now()
-      await tx.insert(fileRefTable).values({
-        id: uuidv4(),
-        fileEntryId,
-        sourceType: knowledgeItemSourceType,
-        sourceId: itemId,
-        role,
-        createdAt: now,
-        updatedAt: now
-      })
-    })
-
-    logger.info('Replaced knowledge item file ref', { itemId, fileEntryId, role })
-  }
-
-  async rebuildFileRefsForItems(itemIds: string[]): Promise<void> {
-    const uniqueItemIds = [...new Set(itemIds)]
-    if (uniqueItemIds.length === 0) {
-      return
-    }
-
-    const dbService = application.get('DbService')
-    const result = await dbService.withWriteTx(async (tx) => {
-      const targetRows = await tx.select().from(knowledgeItemTable).where(inArray(knowledgeItemTable.id, uniqueItemIds))
-      const targetItems = targetRows.map((row) => rowToKnowledgeItem(row))
-
-      await tx
-        .delete(fileRefTable)
-        .where(
-          and(
-            eq(fileRefTable.sourceType, knowledgeItemSourceType),
-            inArray(fileRefTable.sourceId, uniqueItemIds),
-            eq(fileRefTable.role, 'source')
-          )
-        )
-
-      const fileItems = targetItems.filter((item) => item.type === 'file')
-      if (fileItems.length === 0) {
-        return {
-          itemCount: targetItems.length,
-          refCount: 0
-        }
-      }
-
-      const now = Date.now()
-      const refs = await tx
-        .insert(fileRefTable)
-        .values(
-          fileItems.map((item) => ({
-            id: uuidv4(),
-            fileEntryId: item.data.fileEntryId,
-            sourceType: knowledgeItemSourceType,
-            sourceId: item.id,
-            role: 'source',
-            createdAt: now,
-            updatedAt: now
-          }))
-        )
-        .onConflictDoNothing()
-        .returning({ id: fileRefTable.id })
-
-      return {
-        itemCount: targetItems.length,
-        refCount: refs.length
-      }
-    })
-
-    logger.info('Rebuilt knowledge item file refs', {
-      itemCount: result.itemCount,
-      refCount: result.refCount
-    })
   }
 
   async getSubtreeItems(
@@ -642,7 +545,7 @@ export class KnowledgeItemService {
       return {
         item: rowToKnowledgeItem(updatedRow),
         startContainerIds:
-          status === 'failed' && (updatedRow.type === 'directory' || updatedRow.type === 'sitemap')
+          status === 'failed' && updatedRow.type === 'directory'
             ? [existingRow.groupId]
             : [updatedRow.id, existingRow.groupId]
       }
@@ -651,6 +554,84 @@ export class KnowledgeItemService {
     await this.reconcileContainers(item.baseId, startContainerIds)
     logger.info('Updated knowledge item status', { id, status })
     return item
+  }
+
+  /**
+   * Merge a partial `data` patch onto a knowledge item, guarding the item type so
+   * a path is never written onto the wrong kind. Shared by the relative-path
+   * setters below; `label` names the patched field for the validation / log
+   * messages. Runs in a single write transaction.
+   *
+   * `patch` is a concrete key union, not `Partial<KnowledgeItemData>`: the latter
+   * keeps only keys common to every item type and would drop the file-only
+   * `indexedRelativePath`. The merged `data` is cast to `KnowledgeItemData`, which
+   * cannot statically prove the patched key belongs to the resolved item type —
+   * `allowedTypes` is the runtime guard that makes the cast sound, so the two are
+   * load-bearing together and must be kept in sync.
+   */
+  private async patchItemData(
+    id: string,
+    allowedTypes: KnowledgeItemType[],
+    patch: { indexedRelativePath: string } | { relativePath: string },
+    label: string
+  ): Promise<KnowledgeItem> {
+    const dbService = application.get('DbService')
+    const row = await dbService.withWriteTx(async (tx) => {
+      const [existingRow] = await tx.select().from(knowledgeItemTable).where(eq(knowledgeItemTable.id, id)).limit(1)
+
+      if (!existingRow) {
+        throw DataApiErrorFactory.notFound('KnowledgeItem', id)
+      }
+
+      const existingItem = rowToKnowledgeItem(existingRow)
+      if (!allowedTypes.includes(existingItem.type)) {
+        throw DataApiErrorFactory.validation({
+          type: [`Knowledge item ${id} must be of type ${allowedTypes.join(' or ')} to store its ${label}`]
+        })
+      }
+
+      const [updatedRow] = await tx
+        .update(knowledgeItemTable)
+        .set({
+          data: { ...existingItem.data, ...patch } as KnowledgeItemData
+        })
+        .where(eq(knowledgeItemTable.id, id))
+        .returning()
+
+      if (!updatedRow) {
+        throw DataApiErrorFactory.dataInconsistent(
+          'KnowledgeItem',
+          `Knowledge item ${label} update result missing for id '${id}'`
+        )
+      }
+
+      return updatedRow
+    })
+
+    logger.info(`Updated knowledge item ${label}`, { id, ...patch })
+    return rowToKnowledgeItem(row)
+  }
+
+  async updateIndexedRelativePath(id: string, indexedRelativePath: string): Promise<KnowledgeItem> {
+    return this.patchItemData(id, ['file'], { indexedRelativePath }, 'indexed relative path')
+  }
+
+  /**
+   * Pin a captured url/note snapshot's base-relative path onto the item's `data`.
+   * url and note store the snapshot identically — the `type` guards the call site
+   * against writing the path onto the wrong item kind.
+   */
+  async updateSnapshotRelativePath(id: string, type: 'url' | 'note', relativePath: string): Promise<KnowledgeItem> {
+    return this.patchItemData(id, [type], { relativePath }, `${type} snapshot relative path`)
+  }
+
+  /**
+   * Pin the deduped `raw/` directory prefix chosen during expansion onto a directory
+   * container's `data.relativePath` (e.g. `docs` or `docs_2`). The original folder stays
+   * in `data.source`; this prefix is what the UI shows and what delete removes the shell by.
+   */
+  async updateDirectoryRelativePath(id: string, relativePath: string): Promise<KnowledgeItem> {
+    return this.patchItemData(id, ['directory'], { relativePath }, 'directory relative path')
   }
 
   private async reconcileContainers(
@@ -675,7 +656,7 @@ export class KnowledgeItemService {
           .where(and(eq(knowledgeItemTable.baseId, baseId), eq(knowledgeItemTable.id, containerId)))
           .limit(1)
 
-        if (!containerRow || (containerRow.type !== 'directory' && containerRow.type !== 'sitemap')) {
+        if (!containerRow || containerRow.type !== 'directory') {
           continue
         }
 
@@ -731,8 +712,6 @@ export class KnowledgeItemService {
       if (!existingRow) {
         throw DataApiErrorFactory.notFound('KnowledgeItem', id)
       }
-
-      await this.deleteFileRefsForSubtreeTx(tx, existingRow.baseId, [id])
 
       const [row] = await tx.delete(knowledgeItemTable).where(eq(knowledgeItemTable.id, id)).returning({
         id: knowledgeItemTable.id

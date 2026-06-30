@@ -1,20 +1,14 @@
-import { SwapOutlined } from '@ant-design/icons'
+import { Scrollbar } from '@cherrystudio/ui'
 import { usePreference } from '@data/hooks/usePreference'
-import { loggerService } from '@logger'
 import LanguageSelect from '@renderer/components/LanguageSelect'
-import Scrollbar from '@renderer/components/Scrollbar'
-import { useDefaultModel } from '@renderer/hooks/useAssistant'
-import { translateText } from '@renderer/services/TranslateService'
-import { formatErrorMessageWithPrefix, isAbortError } from '@renderer/utils/error'
-import { Select } from 'antd'
-import { isEmpty } from 'lodash'
+import { useTranslate } from '@renderer/hooks/translate'
+import { useDefaultModel } from '@renderer/hooks/useModel'
+import { isEmpty } from 'es-toolkit/compat'
+import { ArrowLeftRight } from 'lucide-react'
 import type { FC } from 'react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { useTranslation } from 'react-i18next'
-import styled from 'styled-components'
-
-const logger = loggerService.withContext('TranslateWindow')
 
 interface Props {
   text: string
@@ -25,30 +19,16 @@ const Translate: FC<Props> = ({ text }) => {
   const [targetLanguage, setTargetLanguage] = usePreference('feature.translate.mini_window.target_lang')
   const { translateModel } = useDefaultModel()
   const { t } = useTranslation()
-  const translatingRef = useRef(false)
+  const { translate: runTranslate, isTranslating } = useTranslate({
+    loggerContext: 'TranslateWindow',
+    onResponse: setResult
+  })
 
   const translate = useCallback(async () => {
     if (!text.trim() || !translateModel) return
-
-    if (translatingRef.current) return
-
-    try {
-      translatingRef.current = true
-
-      await translateText(text, targetLanguage, setResult)
-
-      translatingRef.current = false
-    } catch (error) {
-      // User-initiated aborts shouldn't look like failures; anything else gets
-      // the upstream message prefixed so the user sees why it failed.
-      if (!isAbortError(error)) {
-        logger.error('Error fetching result:', error as Error)
-        window.toast.error(formatErrorMessageWithPrefix(error, t('translate.error.failed')))
-      }
-    } finally {
-      translatingRef.current = false
-    }
-  }, [text, targetLanguage, translateModel, t])
+    if (isTranslating) return
+    await runTranslate(text, targetLanguage)
+  }, [text, targetLanguage, translateModel, isTranslating, runTranslate])
 
   useEffect(() => {
     void translate()
@@ -60,83 +40,33 @@ const Translate: FC<Props> = ({ text }) => {
   })
 
   return (
-    <Container>
-      <MenuContainer>
-        <Select
-          showSearch
-          value="any"
-          style={{ maxWidth: 200, minWidth: 100, flex: 1 }}
-          optionFilterProp="label"
-          disabled
-          options={[{ label: t('translate.any.language'), value: 'any' }]}
-        />
-        <SwapOutlined />
+    <div className="flex flex-1 flex-col overflow-hidden p-3 [-webkit-app-region:no-drag]">
+      <div className="mb-4 flex w-full flex-row items-center justify-center gap-5">
+        <div className="flex h-9 min-w-25 flex-1 items-center rounded-md border border-input bg-muted px-3 text-foreground-muted text-sm opacity-70">
+          <span className="truncate">{t('translate.any.language')}</span>
+        </div>
+        <ArrowLeftRight className="size-4 shrink-0 text-muted-foreground" />
         <LanguageSelect
           showSearch
           value={targetLanguage}
-          style={{ maxWidth: 200, minWidth: 130, flex: 1 }}
+          className="min-w-32.5 flex-1"
           optionFilterProp="label"
           onChange={async (value) => {
             return await setTargetLanguage(value)
           }}
         />
-      </MenuContainer>
-      <Main>
+      </div>
+      <div className="flex w-full flex-1 overflow-hidden">
         {isEmpty(result) ? (
-          <LoadingText>{t('translate.output.placeholder')}...</LoadingText>
+          <div className="text-foreground-muted italic">{t('translate.output.placeholder')}...</div>
         ) : (
-          <OutputContainer>
-            <ResultText>{result}</ResultText>
-          </OutputContainer>
+          <Scrollbar className="flex flex-1 flex-col gap-2.5">
+            <div className="w-full whitespace-pre-wrap break-words">{result}</div>
+          </Scrollbar>
         )}
-      </Main>
-    </Container>
+      </div>
+    </div>
   )
 }
-
-const Container = styled.div`
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  padding: 12px;
-  /* padding-right: 0; */
-  overflow: hidden;
-  -webkit-app-region: none;
-`
-
-const Main = styled.div`
-  display: flex;
-  flex: 1;
-  width: 100%;
-  overflow: hidden;
-`
-
-const ResultText = styled.div`
-  white-space: pre-wrap;
-  word-break: break-word;
-  width: 100%;
-`
-
-const LoadingText = styled.div`
-  color: var(--color-text-2);
-  font-style: italic;
-`
-
-const MenuContainer = styled.div`
-  display: flex;
-  width: 100%;
-  flex-direction: row;
-  align-items: center;
-  justify-content: center;
-  margin-bottom: 15px;
-  gap: 20px;
-`
-
-const OutputContainer = styled(Scrollbar)`
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  gap: 10px;
-`
 
 export default Translate

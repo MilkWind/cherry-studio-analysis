@@ -1,5 +1,4 @@
 import type { KnowledgeBase } from '@shared/data/types/knowledge'
-import { ENDPOINT_TYPE, MODEL_CAPABILITY } from '@shared/data/types/model'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -8,8 +7,11 @@ import RagConfigPanel from '../RagConfigPanel'
 
 const mockUseKnowledgeRagConfig = vi.fn()
 const mockSave = vi.fn()
-const mockDataApiGet = vi.fn()
-const mockGetEmbeddingDimensions = vi.fn()
+// embedMany goes through ipcApi.request('ai.embed_many', …) now (Main IPC).
+const { mockEmbedMany } = vi.hoisted(() => ({ mockEmbedMany: vi.fn() }))
+vi.mock('@renderer/ipc', () => ({
+  ipcApi: { request: (_route: string, input: unknown) => mockEmbedMany(input) }
+}))
 
 const renderRagConfigPanel = (onRestoreBase = vi.fn(), baseOverrides: Partial<KnowledgeBase> = {}) => {
   return render(<RagConfigPanel base={createKnowledgeBase(baseOverrides)} onRestoreBase={onRestoreBase} />)
@@ -67,6 +69,23 @@ vi.mock('@cherrystudio/ui', async () => {
       <div {...props}>{children}</div>
     ),
     Input: (props: Record<string, unknown>) => <input {...props} />,
+    Switch: ({
+      checked,
+      onCheckedChange,
+      ...props
+    }: {
+      checked?: boolean
+      onCheckedChange?: (checked: boolean) => void
+      [key: string]: unknown
+    }) => (
+      <input
+        type="checkbox"
+        role="switch"
+        checked={checked ?? false}
+        onChange={(event) => onCheckedChange?.(event.target.checked)}
+        {...props}
+      />
+    ),
     Select: ({
       children,
       onValueChange
@@ -128,29 +147,42 @@ vi.mock('@cherrystudio/ui', async () => {
 })
 
 vi.mock('../../../hooks', () => ({
-  useKnowledgeRagConfig: (base: KnowledgeBase) => mockUseKnowledgeRagConfig(base)
+  useKnowledgeRagConfig: (base: KnowledgeBase) => mockUseKnowledgeRagConfig(base),
+  useEmbeddingDimensions: () => ({
+    fetchDimensions: async (uniqueModelId: string) => {
+      const { embeddings } = await mockEmbedMany({
+        uniqueModelId,
+        values: ['test']
+      })
+      return embeddings[0]?.length ?? 0
+    },
+    isFetchingDimensions: false
+  })
 }))
 
-vi.mock('@data/DataApiService', () => ({
-  dataApiService: {
-    get: (...args: unknown[]) => mockDataApiGet(...args)
-  }
-}))
-
-vi.mock('@renderer/aiCore', () => ({
-  AiProvider: vi.fn().mockImplementation(() => ({
-    getEmbeddingDimensions: mockGetEmbeddingDimensions
-  }))
-}))
-
-vi.mock('@renderer/pages/settings/ProviderSettings/utils/v1ProviderShim', () => ({
-  toV1ModelForCheckApi: (model: { apiModelId?: string; id: string; name: string; providerId: string }) => ({
-    id: model.apiModelId ?? model.id,
-    provider: model.providerId,
-    name: model.name,
-    group: ''
-  }),
-  toV1ProviderShim: (provider: unknown, options?: unknown) => ({ provider, options })
+vi.mock('../../../components/KnowledgeModelSelect', () => ({
+  isEmbeddingModel: () => true,
+  isRerankModel: () => true,
+  KnowledgeModelSelect: ({
+    value,
+    placeholder,
+    onChange,
+    'aria-label': ariaLabel
+  }: {
+    value: string | null
+    placeholder: string
+    onChange: (modelId: string | null) => void
+    'aria-label'?: string
+  }) => (
+    <div>
+      <span>{value ?? placeholder}</span>
+      <input
+        aria-label={ariaLabel ?? placeholder}
+        value={value ?? ''}
+        onChange={(event) => onChange(event.target.value === '' ? null : event.target.value)}
+      />
+    </div>
+  )
 }))
 
 vi.mock('react-i18next', () => ({
@@ -228,11 +260,13 @@ const createKnowledgeBase = (overrides: Partial<KnowledgeBase> = {}): KnowledgeB
   fileProcessorId: undefined,
   chunkSize: 1024,
   chunkOverlap: 200,
+  chunkStrategy: 'structured',
+  chunkSeparator: '\\n\\n',
   threshold: 0.1,
   documentCount: 6,
   status: 'completed',
   error: null,
-  searchMode: 'default',
+  searchMode: 'vector',
   hybridAlpha: undefined,
   createdAt: '2026-04-15T09:00:00+08:00',
   updatedAt: '2026-04-15T09:00:00+08:00',
@@ -242,39 +276,7 @@ const createKnowledgeBase = (overrides: Partial<KnowledgeBase> = {}): KnowledgeB
 describe('RagConfigPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockGetEmbeddingDimensions.mockResolvedValue(2048)
-    mockDataApiGet.mockImplementation((path: string) => {
-      if (path === '/providers/openai') {
-        return Promise.resolve({
-          id: 'openai',
-          name: 'OpenAI',
-          endpointConfigs: {
-            [ENDPOINT_TYPE.OPENAI_EMBEDDINGS]: {
-              baseUrl: 'https://api.openai.com/v1'
-            }
-          },
-          defaultChatEndpoint: ENDPOINT_TYPE.OPENAI_CHAT_COMPLETIONS,
-          apiKeys: [{ id: 'key-1', isEnabled: true }],
-          authType: 'api-key',
-          apiFeatures: {
-            arrayContent: true,
-            streamOptions: true,
-            developerRole: false,
-            serviceTier: false,
-            verbosity: false,
-            enableThinking: true
-          },
-          settings: {},
-          isEnabled: true
-        })
-      }
-
-      if (path === '/providers/openai/api-keys') {
-        return Promise.resolve({ keys: [{ id: 'key-1', key: 'sk-test', isEnabled: true }] })
-      }
-
-      return Promise.resolve({ id: 'mock' })
-    })
+    mockEmbedMany.mockResolvedValue({ embeddings: [new Array(2048).fill(0)] })
     Object.assign(window, {
       toast: {
         success: vi.fn(),
@@ -287,49 +289,21 @@ describe('RagConfigPanel', () => {
         fileProcessorId: null,
         chunkSize: '512',
         chunkOverlap: '64',
+        chunkStrategy: 'structured',
+        chunkSeparator: '\\n\\n',
         embeddingModelId: 'openai::text-embedding-3-small',
         rerankModelId: null,
-        dimensions: '1536',
         documentCount: 6,
         threshold: 0.1,
-        searchMode: 'default',
+        searchMode: 'vector',
         hybridAlpha: null
       },
-      embeddingModels: [
-        {
-          id: 'openai::text-embedding-3-small',
-          providerId: 'openai',
-          apiModelId: 'text-embedding-3-small',
-          name: 'text-embedding-3-small',
-          capabilities: [MODEL_CAPABILITY.EMBEDDING],
-          endpointTypes: [ENDPOINT_TYPE.OPENAI_EMBEDDINGS],
-          supportsStreaming: false,
-          isEnabled: true,
-          isHidden: false
-        },
-        {
-          id: 'voyage::voyage-3-large',
-          providerId: 'voyage',
-          apiModelId: 'voyage-3-large',
-          name: 'voyage-3-large',
-          capabilities: [MODEL_CAPABILITY.EMBEDDING],
-          endpointTypes: [ENDPOINT_TYPE.OPENAI_EMBEDDINGS],
-          supportsStreaming: false,
-          isEnabled: true,
-          isHidden: false
-        }
-      ],
       fileProcessorOptions: [{ value: 'doc2x', label: 'Doc2X' }],
-      embeddingModelOptions: [
-        { value: 'openai::text-embedding-3-small', label: 'text-embedding-3-small · openai' },
-        { value: 'voyage::voyage-3-large', label: 'voyage-3-large · voyage' }
-      ],
       searchModeOptions: [
         { value: 'hybrid', label: '混合检索（推荐）' },
-        { value: 'default', label: '向量检索' },
+        { value: 'vector', label: '向量检索' },
         { value: 'bm25', label: '全文检索' }
       ],
-      rerankModelOptions: [{ value: 'jina::rerank', label: 'rerank · jina' }],
       save: mockSave,
       isLoading: false,
       error: undefined
@@ -371,11 +345,8 @@ describe('RagConfigPanel', () => {
     expect(screen.getByText('文档处理')).toBeInTheDocument()
     expect(screen.getByText('请求文档片段数 (Top K)')).toBeInTheDocument()
     expect(screen.getByText('重排模型 (Rerank)')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '不使用' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'text-embedding-3-small · openai' })).toBeInTheDocument()
-    expect(screen.getByDisplayValue('1536')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '刷新向量维度' })).not.toBeDisabled()
-    expect(screen.queryByRole('button', { name: '获取嵌入维度' })).not.toBeInTheDocument()
+    expect(screen.getByText('不使用')).toBeInTheDocument()
+    expect(screen.getByLabelText('嵌入模型')).toHaveValue('openai::text-embedding-3-small')
     expect(screen.getByDisplayValue('512')).toBeInTheDocument()
     expect(screen.getByDisplayValue('64')).toBeInTheDocument()
     expect(screen.queryByText('Hybrid Alpha')).not.toBeInTheDocument()
@@ -462,63 +433,18 @@ describe('RagConfigPanel', () => {
     expect(mockSave).not.toHaveBeenCalled()
   })
 
-  it('opens rebuild dialog instead of patching when embedding config changes', () => {
+  it('opens the rebuild flow when the embedding model changes', () => {
     const onRestoreBase = vi.fn()
 
     renderRagConfigPanel(onRestoreBase)
 
-    fireEvent.click(screen.getByRole('button', { name: 'voyage-3-large · voyage' }))
+    fireEvent.change(screen.getByLabelText('嵌入模型'), { target: { value: 'voyage::voyage-3-large' } })
     expect(screen.getByRole('button', { name: '重建' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '重建' }))
 
     expect(mockSave).not.toHaveBeenCalled()
     expect(onRestoreBase).toHaveBeenCalledWith(expect.objectContaining({ id: 'base-1' }), {
-      embeddingModelId: 'voyage::voyage-3-large',
-      dimensions: 1536
-    })
-  })
-
-  it('opens rebuild dialog and changes the action label when dimensions change', () => {
-    const onRestoreBase = vi.fn()
-
-    renderRagConfigPanel(onRestoreBase)
-
-    fireEvent.change(screen.getByDisplayValue('1536'), { target: { value: '4096' } })
-    expect(screen.getByRole('button', { name: '重建' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '重建' }))
-
-    expect(mockSave).not.toHaveBeenCalled()
-    expect(onRestoreBase).toHaveBeenCalledWith(expect.objectContaining({ id: 'base-1' }), {
-      embeddingModelId: 'openai::text-embedding-3-small',
-      dimensions: 4096
-    })
-  })
-
-  it('refreshes embedding dimensions and opens the rebuild flow with the fetched value', async () => {
-    const onRestoreBase = vi.fn()
-
-    renderRagConfigPanel(onRestoreBase)
-
-    fireEvent.click(screen.getByRole('button', { name: '刷新向量维度' }))
-
-    await waitFor(() => {
-      expect(mockDataApiGet).toHaveBeenCalledWith('/providers/openai')
-      expect(mockDataApiGet).toHaveBeenCalledWith('/providers/openai/api-keys', { query: { enabled: true } })
-      expect(mockGetEmbeddingDimensions).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id: 'text-embedding-3-small',
-          provider: 'openai'
-        })
-      )
-      expect(screen.getByDisplayValue('2048')).toBeInTheDocument()
-    })
-
-    fireEvent.click(screen.getByRole('button', { name: '重建' }))
-
-    expect(mockSave).not.toHaveBeenCalled()
-    expect(onRestoreBase).toHaveBeenCalledWith(expect.objectContaining({ id: 'base-1' }), {
-      embeddingModelId: 'openai::text-embedding-3-small',
-      dimensions: 2048
+      embeddingModelId: 'voyage::voyage-3-large'
     })
   })
 
@@ -533,41 +459,27 @@ describe('RagConfigPanel', () => {
     expect(screen.queryByRole('tooltip', { name: '混合检索中向量得分的权重。' })).not.toBeInTheDocument()
   })
 
-  it('shows hybrid alpha when the current search mode is hybrid', () => {
+  it('hides threshold for hybrid search mode without rerank', () => {
     mockUseKnowledgeRagConfig.mockReturnValueOnce({
       initialValues: {
         fileProcessorId: null,
         chunkSize: '512',
         chunkOverlap: '64',
+        chunkStrategy: 'structured',
+        chunkSeparator: '\\n\\n',
         embeddingModelId: 'openai::text-embedding-3-small',
         rerankModelId: null,
-        dimensions: '1536',
         documentCount: 6,
         threshold: 0.1,
         searchMode: 'hybrid',
         hybridAlpha: 0.6
       },
       fileProcessorOptions: [{ value: 'doc2x', label: 'Doc2X' }],
-      embeddingModelOptions: [{ value: 'openai::text-embedding-3-small', label: 'text-embedding-3-small · openai' }],
       searchModeOptions: [
         { value: 'hybrid', label: '混合检索（推荐）' },
-        { value: 'default', label: '向量检索' },
+        { value: 'vector', label: '向量检索' },
         { value: 'bm25', label: '全文检索' }
       ],
-      embeddingModels: [
-        {
-          id: 'openai::text-embedding-3-small',
-          providerId: 'openai',
-          apiModelId: 'text-embedding-3-small',
-          name: 'text-embedding-3-small',
-          capabilities: [MODEL_CAPABILITY.EMBEDDING],
-          endpointTypes: [ENDPOINT_TYPE.OPENAI_EMBEDDINGS],
-          supportsStreaming: false,
-          isEnabled: true,
-          isHidden: false
-        }
-      ],
-      rerankModelOptions: [{ value: 'jina::rerank', label: 'rerank · jina' }],
       save: mockSave,
       isLoading: false,
       error: undefined
@@ -578,7 +490,55 @@ describe('RagConfigPanel', () => {
     )
 
     expect(screen.getByText('Hybrid Alpha')).toBeInTheDocument()
-    expect(screen.getByRole('slider', { name: '相似度阈值' })).toBeDisabled()
-    expect(screen.getByRole('tooltip', { name: '该检索模式按排序返回结果，不使用相似度阈值。' })).toBeInTheDocument()
+    expect(screen.queryByRole('slider', { name: '相似度阈值' })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('tooltip', { name: '该检索模式按排序返回结果，不使用相似度阈值。' })
+    ).not.toBeInTheDocument()
+  })
+
+  it('shows threshold for hybrid search mode when rerank is configured', async () => {
+    mockUseKnowledgeRagConfig.mockReturnValue({
+      initialValues: {
+        fileProcessorId: null,
+        chunkSize: '512',
+        chunkOverlap: '64',
+        chunkStrategy: 'structured',
+        chunkSeparator: '\\n\\n',
+        embeddingModelId: 'openai::text-embedding-3-small',
+        rerankModelId: 'jina::rerank',
+        documentCount: 6,
+        threshold: 0.1,
+        searchMode: 'hybrid',
+        hybridAlpha: 0.6
+      },
+      fileProcessorOptions: [{ value: 'doc2x', label: 'Doc2X' }],
+      searchModeOptions: [
+        { value: 'hybrid', label: '混合检索（推荐）' },
+        { value: 'vector', label: '向量检索' },
+        { value: 'bm25', label: '全文检索' }
+      ],
+      save: mockSave,
+      isLoading: false,
+      error: undefined
+    })
+
+    render(
+      <RagConfigPanel
+        base={createKnowledgeBase({ searchMode: 'hybrid', hybridAlpha: 0.6, rerankModelId: 'jina::rerank' })}
+        onRestoreBase={vi.fn()}
+      />
+    )
+
+    fireEvent.change(screen.getByRole('slider', { name: '相似度阈值' }), { target: { value: '0.7' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => {
+      expect(mockSave).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rerankModelId: 'jina::rerank',
+          threshold: 0.7
+        })
+      )
+    })
   })
 })

@@ -1,25 +1,21 @@
 import { Avatar, AvatarFallback, Button, InfoTooltip, PageSidePanel, Tooltip } from '@cherrystudio/ui'
 import { resolveIcon } from '@cherrystudio/ui/icons'
 import { usePreference } from '@data/hooks/usePreference'
-import { ModelSelector } from '@renderer/components/ModelSelector'
-import { getProviderDisplayName } from '@renderer/components/ModelSelector/utils'
-import { useTheme } from '@renderer/context/ThemeProvider'
-import { useModels } from '@renderer/hooks/useModels'
-import { useProviders } from '@renderer/hooks/useProviders'
+import { loggerService } from '@logger'
+import { ModelSelector } from '@renderer/components/Selector/model'
+import { getProviderDisplayName } from '@renderer/components/Selector/model/utils'
+import { useDefaultModel } from '@renderer/hooks/useModel'
+import { useProviders } from '@renderer/hooks/useProvider'
+import { useTheme } from '@renderer/hooks/useTheme'
 import { TranslateSettingsPanelContent } from '@renderer/pages/translate/TranslateSettings'
-import { cn } from '@renderer/utils'
-import { TRANSLATE_PROMPT } from '@shared/config/prompts'
-import {
-  isUniqueModelId,
-  type Model,
-  MODEL_CAPABILITY,
-  parseUniqueModelId,
-  type UniqueModelId
-} from '@shared/data/types/model'
+import { cn } from '@renderer/utils/style'
+import { TRANSLATE_PROMPT } from '@shared/ai/prompts'
+import { type Model, parseUniqueModelId } from '@shared/data/types/model'
 import type { Provider } from '@shared/data/types/provider'
+import { isNonChatModel } from '@shared/utils/model'
 import { ChevronDown, Languages, MessageSquareMore, Rocket, RotateCcw, Settings2 } from 'lucide-react'
 import type { FC, ReactNode } from 'react'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -29,10 +25,12 @@ import {
   SettingGroup,
   SettingRow,
   SettingRowTitle,
-  SettingsContentColumn
+  SettingsContentColumn,
+  SettingTitle
 } from '..'
-import { AssistantSettings } from './DefaultAssistantSettings'
 import { TopicNamingSettings } from './QuickModelPopup'
+
+const logger = loggerService.withContext('ModelSettings')
 
 interface ModelSettingsProps {
   showSettingsButton?: boolean
@@ -71,29 +69,17 @@ interface ModelSelectorTriggerProps {
 }
 
 interface DefaultModelSelectorProps extends ModelSelectorTriggerProps {
-  value?: UniqueModelId
   filter: (model: Model) => boolean
-  onSelect: (modelId: UniqueModelId | undefined) => void
+  onSelect: (model: Model | undefined) => void
 }
 
-type ModelSettingsPanel = 'default-assistant' | 'quick-model' | 'translate' | null
+type ModelSettingsPanel = 'quick-model' | 'translate' | null
 
-const excludedDefaultModelCapabilities = new Set<string>([
-  MODEL_CAPABILITY.EMBEDDING,
-  MODEL_CAPABILITY.RERANK,
-  MODEL_CAPABILITY.IMAGE_GENERATION
-])
-
-const ASSISTANT_SETTINGS_DRAWER_WIDTH_CLASS = '!w-[min(31.25rem,calc(100%-1rem))]'
 const MODEL_SETTINGS_DRAWER_WIDTH_CLASS = '!w-[min(31.25rem,calc(100%-1rem))]'
 const TRANSLATE_DRAWER_WIDTH_CLASS = '!w-[min(31.25rem,calc(100%-1rem))]'
 const SETTINGS_DRAWER_BODY_CLASS = 'space-y-0 px-6 py-5'
-const MODEL_SELECTOR_VISIBLE_COUNT = 8
 
 const drawerTitleClassName = 'truncate font-semibold text-foreground text-sm leading-4'
-
-const toModelSelectorValue = (modelId: string | null): UniqueModelId | undefined =>
-  modelId && isUniqueModelId(modelId) ? modelId : undefined
 
 const getModelIdentifier = (model: Model) => model.apiModelId ?? parseUniqueModelId(model.id).modelId
 
@@ -127,7 +113,6 @@ const renderModelSelectorTrigger = ({ model, providers, placeholder, compact }: 
 }
 
 const DefaultModelSelector: FC<DefaultModelSelectorProps> = ({
-  value,
   model,
   providers,
   placeholder,
@@ -137,11 +122,9 @@ const DefaultModelSelector: FC<DefaultModelSelectorProps> = ({
 }) => (
   <ModelSelector
     multiple={false}
-    selectionType="id"
-    value={value}
+    value={model}
     onSelect={onSelect}
     filter={filter}
-    listVisibleCount={MODEL_SELECTOR_VISIBLE_COUNT}
     trigger={renderModelSelectorTrigger({ model, providers, placeholder, compact })}
   />
 )
@@ -151,51 +134,42 @@ const ModelSettings: FC<ModelSettingsProps> = ({
   showDescription = true,
   compact = false
 }) => {
-  const [defaultModelId, setDefaultModelId] = usePreference('chat.default_model_id')
-  const [quickModelId, setQuickModelId] = usePreference('feature.quick_assistant.model_id')
-  const [translateModelId, setTranslateModelId] = usePreference('feature.translate.model_id')
-  const [activePanel, setActivePanel] = useState<ModelSettingsPanel>(null)
-  const { models } = useModels({ enabled: true })
+  const { defaultModel, quickModel, translateModel, setDefaultModel, setQuickModel, setTranslateModel } =
+    useDefaultModel()
   const { providers } = useProviders({ enabled: true })
+  const [activePanel, setActivePanel] = useState<ModelSettingsPanel>(null)
   const { theme } = useTheme()
   const { t } = useTranslation()
 
   const [translateModelPrompt, setTranslateModelPrompt] = usePreference('feature.translate.model_prompt')
 
-  const modelPredicate = useCallback(
-    (model: Model) => !model.capabilities.some((capability) => excludedDefaultModelCapabilities.has(capability)),
-    []
+  const modelFilter = useCallback((model: Model) => !isNonChatModel(model), [])
+
+  const onSelectDefault = useCallback(
+    (selected: Model | undefined) => {
+      if (!selected) return
+      void setDefaultModel(selected).catch((error) => {
+        logger.error('Failed to set default model', { modelId: selected.id, error })
+        window.toast.error(t('settings.models.manage.operation_failed'))
+      })
+    },
+    [setDefaultModel, t]
   )
 
-  const modelsById = useMemo(() => new Map(models.map((model) => [model.id, model])), [models])
-
-  const defaultModelValue = toModelSelectorValue(defaultModelId)
-  const quickModelValue = toModelSelectorValue(quickModelId)
-  const translateModelValue = toModelSelectorValue(translateModelId)
-
-  const defaultModel = defaultModelValue ? modelsById.get(defaultModelValue) : undefined
-  const quickModel = quickModelValue ? modelsById.get(quickModelValue) : undefined
-  const translateModel = translateModelValue ? modelsById.get(translateModelValue) : undefined
-
-  const onSelectDefaultModel = useCallback(
-    (modelId: UniqueModelId | undefined) => {
-      void setDefaultModelId(modelId ?? null)
+  const onSelectQuick = useCallback(
+    (selected: Model | undefined) => {
+      if (!selected) return
+      void setQuickModel(selected)
     },
-    [setDefaultModelId]
+    [setQuickModel]
   )
 
-  const onSelectQuickModel = useCallback(
-    (modelId: UniqueModelId | undefined) => {
-      void setQuickModelId(modelId ?? null)
+  const onSelectTranslate = useCallback(
+    (selected: Model | undefined) => {
+      if (!selected) return
+      void setTranslateModel(selected)
     },
-    [setQuickModelId]
-  )
-
-  const onSelectTranslateModel = useCallback(
-    (modelId: UniqueModelId | undefined) => {
-      void setTranslateModelId(modelId ?? null)
-    },
-    [setTranslateModelId]
+    [setTranslateModel]
   )
 
   const onResetTranslatePrompt = () => {
@@ -215,35 +189,30 @@ const ModelSettings: FC<ModelSettingsProps> = ({
     <div className="relative flex min-h-0 flex-1">
       <ContainerComponent theme={theme} {...containerProps}>
         <SettingGroup theme={theme} style={groupStyle}>
+          {!compact && (
+            <>
+              <SettingTitle>{t('settings.model')}</SettingTitle>
+              <SettingDivider />
+            </>
+          )}
           <ModelSettingRow
             compact={compact}
-            icon={<MessageSquareMore size={16} className="lucide-custom shrink-0 text-(--color-foreground)" />}
+            icon={<MessageSquareMore size={16} className="lucide-custom shrink-0 text-foreground" />}
             title={t('settings.models.default_assistant_model')}
             description={showDescription ? t('settings.models.default_assistant_model_description') : undefined}>
             <DefaultModelSelector
-              value={defaultModelValue}
               model={defaultModel}
               providers={providers}
-              filter={modelPredicate}
+              filter={modelFilter}
               compact={compact}
-              onSelect={onSelectDefaultModel}
+              onSelect={onSelectDefault}
               placeholder={t('settings.models.empty')}
             />
-            {showSettingsButton && (
-              <Button
-                aria-label={t('settings.assistant.title')}
-                className="shrink-0"
-                onClick={() => setActivePanel('default-assistant')}
-                size="icon-sm"
-                variant="outline">
-                <Settings2 size={16} />
-              </Button>
-            )}
           </ModelSettingRow>
           <SettingDivider />
           <ModelSettingRow
             compact={compact}
-            icon={<Rocket size={16} className="lucide-custom shrink-0 text-(--color-foreground)" />}
+            icon={<Rocket size={16} className="lucide-custom shrink-0 text-foreground" />}
             title={
               <>
                 {t('settings.models.quick_model.label')}
@@ -252,12 +221,11 @@ const ModelSettings: FC<ModelSettingsProps> = ({
             }
             description={showDescription ? t('settings.models.quick_model.description') : undefined}>
             <DefaultModelSelector
-              value={quickModelValue}
               model={quickModel}
               providers={providers}
-              filter={modelPredicate}
+              filter={modelFilter}
               compact={compact}
-              onSelect={onSelectQuickModel}
+              onSelect={onSelectQuick}
               placeholder={t('settings.models.empty')}
             />
             {showSettingsButton && (
@@ -274,16 +242,15 @@ const ModelSettings: FC<ModelSettingsProps> = ({
           <SettingDivider />
           <ModelSettingRow
             compact={compact}
-            icon={<Languages size={16} className="lucide-custom shrink-0 text-(--color-foreground)" />}
+            icon={<Languages size={16} className="lucide-custom shrink-0 text-foreground" />}
             title={t('settings.models.translate_model')}
             description={showDescription ? t('settings.models.translate_model_description') : undefined}>
             <DefaultModelSelector
-              value={translateModelValue}
               model={translateModel}
               providers={providers}
-              filter={modelPredicate}
+              filter={modelFilter}
               compact={compact}
-              onSelect={onSelectTranslateModel}
+              onSelect={onSelectTranslate}
               placeholder={t('settings.models.empty')}
             />
             {showSettingsButton && (
@@ -297,7 +264,7 @@ const ModelSettings: FC<ModelSettingsProps> = ({
                   <Settings2 size={16} />
                 </Button>
                 {translateModelPrompt !== TRANSLATE_PROMPT && (
-                  <Tooltip title={t('common.reset')}>
+                  <Tooltip content={t('common.reset')}>
                     <Button className="shrink-0" onClick={onResetTranslatePrompt} size="icon-sm" variant="outline">
                       <RotateCcw size={16} />
                     </Button>
@@ -310,15 +277,6 @@ const ModelSettings: FC<ModelSettingsProps> = ({
       </ContainerComponent>
       {showSettingsButton && (
         <>
-          <PageSidePanel
-            open={activePanel === 'default-assistant'}
-            onClose={closePanel}
-            closeLabel={t('common.close')}
-            header={<h2 className={drawerTitleClassName}>{t('settings.assistant.title')}</h2>}
-            contentClassName={ASSISTANT_SETTINGS_DRAWER_WIDTH_CLASS}
-            bodyClassName={SETTINGS_DRAWER_BODY_CLASS}>
-            <AssistantSettings />
-          </PageSidePanel>
           <PageSidePanel
             open={activePanel === 'quick-model'}
             onClose={closePanel}
